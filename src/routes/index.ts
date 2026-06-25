@@ -1,0 +1,40 @@
+import { Router } from "express";
+import testRoutes from "./test.routes";
+import authRoutes from "./auth.routes";
+import categoryRoutes from "./category.routes";
+import brandRoutes from "./brand.routes";
+import productRoutes from "./product.routes";
+import cartRoutes from "./cart.routes";
+import wishlistRoutes from "./wishlist.routes";
+import orderRoutes from "./order.routes";
+import discountRoutes from "./discount.routes";
+import reviewRoutes from "./review.routes";
+import dashboardRoutes from "./dashboard.routes";
+import heroRoutes from "./hero.routes";
+
+const router = Router();
+
+// Health check
+router.get("/health", (req, res) => {
+  res.json({
+    status: "success",
+    message: "API is running",
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// Routes
+router.use("/test", testRoutes);
+router.use("/auth", authRoutes);
+router.use("/categories", categoryRoutes);
+router.use("/brands", brandRoutes);
+router.use("/products", productRoutes);
+router.use("/cart", cartRoutes);
+router.use("/wishlist", wishlistRoutes);
+router.use("/orders", orderRoutes);
+router.use("/discounts", discountRoutes);
+router.use("/reviews", reviewRoutes);
+router.use("/dashboard", dashboardRoutes);
+router.use("/hero", heroRoutes);
+
+export default router;
