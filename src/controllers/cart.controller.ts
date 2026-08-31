@@ -13,7 +13,7 @@ export class CartController {
   // Add item to cart
   static async addToCart(req: Request, res: Response, next: NextFunction) {
     try {
-      const { productId, quantity = 1, size }: AddToCartRequest = req.body;
+      const { productId, quantity = 1, colorId }: AddToCartRequest = req.body;
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
 
       // Validation
@@ -28,45 +28,48 @@ export class CartController {
       // Check if product exists and is active
       const product = await prisma.product.findUnique({
         where: { id: productId },
+        include: { colors: true },
       });
 
       if (!product || !product.isActive) {
         throw new NotFoundError("Product not found or unavailable");
       }
 
-      // Validate size if product has sizes defined
-      const productSizes: string[] | null = product.sizes
-        ? JSON.parse(product.sizes as string)
-        : null;
+      // Resolve the color variant (required when the product has colors).
+      // availableStock is the per-color stock when a color is chosen, otherwise
+      // the product's own stock.
+      let selectedColorId: number | null = null;
+      let availableStock = product.stockQuantity;
 
-      if (productSizes && productSizes.length > 0) {
-        if (!size) {
+      if (product.colors.length > 0) {
+        if (!colorId) {
           throw new BadRequestError(
-            `Please select a size. Available: ${productSizes.join(", ")}`
+            `Please select a color. Available: ${product.colors
+              .map((c) => c.name)
+              .join(", ")}`
           );
         }
-        if (!productSizes.includes(size)) {
-          throw new BadRequestError(
-            `Invalid size "${size}". Available: ${productSizes.join(", ")}`
-          );
+        const color = product.colors.find((c) => c.id === colorId);
+        if (!color) {
+          throw new BadRequestError("Invalid color for this product");
         }
+        selectedColorId = color.id;
+        availableStock = color.stockQuantity;
       }
 
-      const selectedSize = productSizes && productSizes.length > 0 ? size! : null;
-
-      // Check if product is in stock
-      if (product.stockQuantity < quantity) {
+      // Check stock
+      if (availableStock < quantity) {
         throw new BadRequestError(
-          `Only ${product.stockQuantity} units available in stock`
+          `Only ${availableStock} units available in stock`
         );
       }
 
-      // Find existing cart item for this product + size combination
+      // Find existing cart item for this product + color combination
       const existingCartItem = await prisma.cartItem.findFirst({
         where: {
           userId: jwtPayload.userId,
           productId: productId,
-          size: selectedSize,
+          colorId: selectedColorId,
         },
       });
 
@@ -76,9 +79,9 @@ export class CartController {
         // Update quantity
         const newQuantity = existingCartItem.quantity + quantity;
 
-        if (product.stockQuantity < newQuantity) {
+        if (availableStock < newQuantity) {
           throw new BadRequestError(
-            `Cannot add more. Only ${product.stockQuantity} units available`
+            `Cannot add more. Only ${availableStock} units available`
           );
         }
 
@@ -86,6 +89,7 @@ export class CartController {
           where: { id: existingCartItem.id },
           data: { quantity: newQuantity },
           include: {
+            color: true,
             product: {
               include: {
                 images: {
@@ -103,9 +107,10 @@ export class CartController {
             userId: jwtPayload.userId,
             productId: productId,
             quantity: quantity,
-            size: selectedSize,
+            colorId: selectedColorId,
           },
           include: {
+            color: true,
             product: {
               include: {
                 images: {
@@ -137,6 +142,7 @@ export class CartController {
       const cartItems = await prisma.cartItem.findMany({
         where: { userId: jwtPayload.userId },
         include: {
+          color: true,
           product: {
             include: {
               images: {
@@ -159,13 +165,15 @@ export class CartController {
         subtotal += itemTotal;
         totalItems += item.quantity;
 
-        // Calculate stock status
+        // Stock status uses the selected color's stock when present.
+        const availableStock = item.color
+          ? item.color.stockQuantity
+          : item.product.stockQuantity;
+
         let stockStatus: "in_stock" | "low_stock" | "out_of_stock" = "in_stock";
-        if (item.product.stockQuantity === 0) {
+        if (availableStock === 0) {
           stockStatus = "out_of_stock";
-        } else if (
-          item.product.stockQuantity <= item.product.lowStockThreshold
-        ) {
+        } else if (availableStock <= item.product.lowStockThreshold) {
           stockStatus = "low_stock";
         }
 
@@ -213,17 +221,20 @@ export class CartController {
       // Check if cart item exists and belongs to user
       const cartItem = await prisma.cartItem.findUnique({
         where: { id: cartItemId },
-        include: { product: true },
+        include: { product: true, color: true },
       });
 
       if (!cartItem || cartItem.userId !== jwtPayload.userId) {
         throw new NotFoundError("Cart item not found");
       }
 
-      // Check stock availability
-      if (cartItem.product.stockQuantity < quantity) {
+      // Check stock availability (per-color when a color was selected)
+      const availableStock = cartItem.color
+        ? cartItem.color.stockQuantity
+        : cartItem.product.stockQuantity;
+      if (availableStock < quantity) {
         throw new BadRequestError(
-          `Only ${cartItem.product.stockQuantity} units available in stock`
+          `Only ${availableStock} units available in stock`
         );
       }
 
@@ -232,6 +243,7 @@ export class CartController {
         where: { id: cartItemId },
         data: { quantity },
         include: {
+          color: true,
           product: {
             include: {
               images: {
@@ -276,6 +288,74 @@ export class CartController {
       });
 
       return ResponseUtil.success(res, null, "Item removed from cart");
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // Merge a guest cart into the logged-in user's cart. Called by the frontend
+  // once, right after login/register. Best-effort: unavailable products or
+  // out-of-stock lines are skipped rather than failing the whole merge, so the
+  // user never loses their session over one stale item.
+  static async mergeCart(req: Request, res: Response, next: NextFunction) {
+    try {
+      const jwtPayload = (req as any).jwtPayload as JwtPayload;
+      const { items } = req.body as {
+        items: { productId: number; quantity: number; colorId?: number }[];
+      };
+
+      for (const line of items) {
+        const product = await prisma.product.findUnique({
+          where: { id: line.productId },
+          include: { colors: true },
+        });
+        if (!product || !product.isActive) continue;
+
+        // Resolve color + available stock the same way addToCart does.
+        let selectedColorId: number | null = null;
+        let availableStock = product.stockQuantity;
+        if (product.colors.length > 0) {
+          const color = line.colorId
+            ? product.colors.find((c) => c.id === line.colorId)
+            : undefined;
+          if (!color) continue; // color required but missing/invalid — skip
+          selectedColorId = color.id;
+          availableStock = color.stockQuantity;
+        }
+        if (availableStock < 1) continue;
+
+        const existing = await prisma.cartItem.findFirst({
+          where: {
+            userId: jwtPayload.userId,
+            productId: line.productId,
+            colorId: selectedColorId,
+          },
+        });
+
+        // Cap the merged quantity at available stock.
+        const desired = (existing?.quantity ?? 0) + line.quantity;
+        const quantity = Math.min(desired, availableStock);
+        if (quantity < 1) continue;
+
+        if (existing) {
+          await prisma.cartItem.update({
+            where: { id: existing.id },
+            data: { quantity },
+          });
+        } else {
+          await prisma.cartItem.create({
+            data: {
+              userId: jwtPayload.userId,
+              productId: line.productId,
+              quantity,
+              colorId: selectedColorId,
+            },
+          });
+        }
+      }
+
+      // Return the merged cart so the client can replace its local state.
+      return CartController.getCart(req, res, next);
     } catch (error) {
       next(error);
     }

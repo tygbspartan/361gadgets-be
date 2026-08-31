@@ -46,6 +46,12 @@ export class ValidationError extends CustomError {
   }
 }
 
+export class TooManyRequestsError extends CustomError {
+  constructor(message: string = "Too many requests") {
+    super(message, 429);
+  }
+}
+
 export class InternalServerError extends CustomError {
   constructor(message: string = "Internal Server Error") {
     super(message, 500);

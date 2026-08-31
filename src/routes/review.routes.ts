@@ -1,6 +1,9 @@
 import { Router } from "express";
 import { ReviewController } from "../controllers/review.controller";
 import { authenticate, isAdmin } from "../middleware/auth.middleware";
+import { writeLimiter } from "../middleware/rateLimit";
+import { validateBody } from "../middleware/validate";
+import { createReviewSchema } from "../validators/schemas";
 
 const router = Router();
 
@@ -12,7 +15,7 @@ router.get("/product/:productId", ReviewController.getProductReviews);
 // ==================== CUSTOMER ROUTES ====================
 
 // Create review
-router.post("/", authenticate, ReviewController.create);
+router.post("/", authenticate, writeLimiter, validateBody(createReviewSchema), ReviewController.create);
 
 // Add follow-up to an existing initial review (30-day gap enforced, needs admin approval)
 router.post("/:id/followup", authenticate, ReviewController.createFollowup);

@@ -86,7 +86,7 @@ export const generateCustomerOrderEmail = (data: OrderEmailData): string => {
   <div class="content">
     <p>Dear ${data.customerName},</p>
     
-    <p>Thank you for choosing Daily Dose! We're excited to process your order.</p>
+    <p>Thank you for choosing 361 Gadgets! We're excited to process your order.</p>
     
     <div class="order-details">
       <h2>Order Details</h2>
@@ -142,12 +142,12 @@ export const generateCustomerOrderEmail = (data: OrderEmailData): string => {
     <p>If you have any questions about your order, please don't hesitate to contact us.</p>
     
     <p>Best regards,<br>
-    <strong>The Daily Dose Team</strong></p>
+    <strong>The 361 Gadgets Team</strong></p>
   </div>
   
   <div class="footer">
     <p>This is an automated email. Please do not reply to this message.</p>
-    <p>&copy; ${new Date().getFullYear()} Daily Dose. All rights reserved.</p>
+    <p>&copy; ${new Date().getFullYear()} 361 Gadgets. All rights reserved.</p>
   </div>
 </body>
 </html>

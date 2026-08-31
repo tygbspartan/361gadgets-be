@@ -2,12 +2,10 @@ import { getRedisClient } from "../config/redis.config";
 
 export const CacheService = {
   async get<T>(key: string): Promise<T | null> {
-    const t = Date.now();
     try {
       const client = getRedisClient();
       if (!client) return null;
       const data = await client.get(key);
-      console.log(`[Cache GET] ${key.substring(0, 40)} ${Date.now() - t}ms ${data ? "HIT" : "MISS"}`);
       return data ? (JSON.parse(data) as T) : null;
     } catch {
       return null;

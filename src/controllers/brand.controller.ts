@@ -10,8 +10,27 @@ import {
 import { CreateBrandRequest, UpdateBrandRequest } from "../types/product.types";
 import { StorageService } from "../services/storage.service";
 import { CacheService, TTL } from "../services/cache.service";
+import { ROLES } from "../constants/roles.constants";
+import { reassignBrandOwner } from "../utils/brandOwnership.util";
+import { JwtPayload } from "../types/auth.types";
 
 export class BrandController {
+  // Validate that an assigned brand owner is an actual vendor (admin) account.
+  private static async assertValidBrandOwner(
+    ownerId: number | null | undefined,
+  ): Promise<void> {
+    if (ownerId === undefined || ownerId === null) return;
+    const vendor = await prisma.user.findFirst({
+      where: { id: ownerId, role: ROLES.ADMIN },
+      select: { id: true },
+    });
+    if (!vendor) {
+      throw new BadRequestError(
+        "ownerId must reference an existing vendor account",
+      );
+    }
+  }
+
   // Create brand (Admin only)
   static async create(req: Request, res: Response, next: NextFunction) {
     try {
@@ -23,12 +42,15 @@ export class BrandController {
         metaTitle,
         metaDescription,
         isFeatured,
+        ownerId,
       }: CreateBrandRequest = req.body;
 
       // Validation
       if (!name) {
         throw new BadRequestError("Brand name is required");
       }
+
+      await BrandController.assertValidBrandOwner(ownerId);
 
       // Generate slug if not provided
       let brandSlug = slug || SlugUtil.generateSlug(name);
@@ -54,11 +76,92 @@ export class BrandController {
           metaTitle,
           metaDescription,
           isFeatured,
+          ownerId: ownerId ?? null,
         },
       });
 
-      CacheService.invalidatePatternBackground("brands:*");
+      await CacheService.invalidatePattern("brands:*");
       return ResponseUtil.success(res, brand, "Brand created successfully", 201);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // Bulk create brands (superadmin). All-or-nothing: if any item is invalid,
+  // nothing is created and per-item errors are returned.
+  static async bulkCreate(req: Request, res: Response, next: NextFunction) {
+    try {
+      const items: CreateBrandRequest[] = req.body.brands ?? req.body.items;
+
+      if (!Array.isArray(items) || items.length === 0) {
+        throw new BadRequestError("Provide a non-empty 'brands' array");
+      }
+      if (items.length > 100) {
+        throw new BadRequestError("Cannot create more than 100 brands at once");
+      }
+
+      // Which of the desired slugs already exist in the DB?
+      const desiredSlugs = items
+        .map((b) => b?.slug || (b?.name ? SlugUtil.generateSlug(b.name) : ""))
+        .filter(Boolean);
+      const existing = await prisma.brand.findMany({
+        where: { slug: { in: desiredSlugs } },
+        select: { slug: true },
+      });
+      const existingSlugs = new Set(existing.map((b) => b.slug));
+
+      const errors: { index: number; error: string }[] = [];
+      const prepared: any[] = [];
+      const seenSlugs = new Set<string>();
+
+      items.forEach((b, i) => {
+        if (!b?.name || !String(b.name).trim()) {
+          errors.push({ index: i, error: "name is required" });
+          return;
+        }
+        const slug = b.slug || SlugUtil.generateSlug(b.name);
+        if (existingSlugs.has(slug)) {
+          errors.push({ index: i, error: `slug "${slug}" already exists` });
+          return;
+        }
+        if (seenSlugs.has(slug)) {
+          errors.push({
+            index: i,
+            error: `duplicate slug "${slug}" within the batch`,
+          });
+          return;
+        }
+        seenSlugs.add(slug);
+        prepared.push({
+          name: b.name.trim(),
+          slug,
+          description: b.description,
+          logoUrl: b.logoUrl,
+          metaTitle: b.metaTitle,
+          metaDescription: b.metaDescription,
+          isFeatured: b.isFeatured ?? false,
+        });
+      });
+
+      if (errors.length > 0) {
+        return ResponseUtil.badRequest(
+          res,
+          `Bulk create failed for ${errors.length} of ${items.length} item(s). No brands were created.`,
+          errors,
+        );
+      }
+
+      const created = await prisma.$transaction(
+        prepared.map((data) => prisma.brand.create({ data })),
+      );
+
+      await CacheService.invalidatePattern("brands:*");
+      return ResponseUtil.success(
+        res,
+        { count: created.length, brands: created },
+        `${created.length} brand(s) created successfully`,
+        201,
+      );
     } catch (error) {
       next(error);
     }
@@ -176,6 +279,54 @@ export class BrandController {
     }
   }
 
+  // Scoped admin brand list. A vendor sees only their own brands; the superadmin
+  // sees all and may filter by ?ownerId=<id> or ?ownerId=null (unassigned only).
+  // Each brand includes its owner (id + company/name) and product count.
+  static async getAdminList(req: Request, res: Response, next: NextFunction) {
+    try {
+      const jwtPayload = (req as any).jwtPayload as JwtPayload;
+      const isSuper = jwtPayload.role === ROLES.SUPERADMIN;
+
+      const where: any = {};
+      if (isSuper) {
+        const { ownerId } = req.query;
+        if (ownerId === "null") {
+          where.ownerId = null;
+        } else if (ownerId !== undefined && ownerId !== "") {
+          where.ownerId = parseInt(ownerId as string);
+        }
+      } else {
+        where.ownerId = jwtPayload.userId;
+      }
+
+      const brands = await prisma.brand.findMany({
+        where,
+        include: {
+          owner: {
+            select: {
+              id: true,
+              companyName: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+          _count: { select: { products: true } },
+        },
+        orderBy: { name: "asc" },
+      });
+
+      const data = brands.map((brand) => ({
+        ...brand,
+        productCount: brand._count.products,
+        _count: undefined,
+      }));
+
+      return ResponseUtil.success(res, data, "Brands retrieved successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
   // Get single brand by ID (Admin)
   static async getById(req: Request, res: Response, next: NextFunction) {
     try {
@@ -217,6 +368,8 @@ export class BrandController {
         throw new NotFoundError("Brand not found");
       }
 
+      await BrandController.assertValidBrandOwner(updateData.ownerId);
+
       // If updating slug, check for conflicts
       if (updateData.slug && updateData.slug !== existingBrand.slug) {
         const slugExists = await prisma.brand.findUnique({
@@ -237,12 +390,36 @@ export class BrandController {
         await StorageService.deleteImage(existingBrand.logoUrl);
       }
 
-      const brand = await prisma.brand.update({
-        where: { id: parseInt(id) },
-        data: updateData,
+      const brandId = parseInt(id);
+      const ownerChanging =
+        updateData.ownerId !== undefined &&
+        (updateData.ownerId ?? null) !== existingBrand.ownerId;
+
+      // Whitelist updatable fields explicitly (no raw body spread → no
+      // mass-assignment). `undefined` values are ignored by Prisma. An ownerId
+      // change is applied via reassignBrandOwner so the previous vendor's
+      // products under the brand are deactivated (non-destructive transfer).
+      const brand = await prisma.$transaction(async (tx) => {
+        if (ownerChanging) {
+          await reassignBrandOwner(tx, brandId, updateData.ownerId ?? null);
+        }
+        return tx.brand.update({
+          where: { id: brandId },
+          data: {
+            name: updateData.name,
+            slug: updateData.slug,
+            description: updateData.description,
+            logoUrl: updateData.logoUrl,
+            isActive: updateData.isActive,
+            isFeatured: updateData.isFeatured,
+            metaTitle: updateData.metaTitle,
+            metaDescription: updateData.metaDescription,
+            // ownerId handled above via reassignBrandOwner (do not set here).
+          },
+        });
       });
 
-      CacheService.invalidatePatternBackground("brands:*");
+      await CacheService.invalidatePattern("brands:*");
       return ResponseUtil.success(res, brand, "Brand updated successfully");
     } catch (error) {
       next(error);
@@ -284,7 +461,7 @@ export class BrandController {
 
       await prisma.brand.delete({ where: { id: parseInt(id) } });
 
-      CacheService.invalidatePatternBackground("brands:*");
+      await CacheService.invalidatePattern("brands:*");
       return ResponseUtil.success(res, null, "Brand deleted successfully");
     } catch (error) {
       next(error);

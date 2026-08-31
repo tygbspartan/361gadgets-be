@@ -13,6 +13,7 @@ import {
   ModerateReviewRequest,
 } from "../types/review.types";
 import { JwtPayload } from "../types/auth.types";
+import { ROLES } from "../constants/roles.constants";
 
 export class ReviewController {
   // ==================== CUSTOMER ENDPOINTS ====================
@@ -66,7 +67,7 @@ export class ReviewController {
         );
       }
 
-      // Check if user has purchased this product (verified purchase)
+      // Only customers who have received (delivered) this product may review it.
       const order = await prisma.order.findFirst({
         where: {
           userId: jwtPayload.userId,
@@ -75,8 +76,14 @@ export class ReviewController {
         },
       });
 
-      const isVerifiedPurchase = !!order;
-      const orderId = order?.id || null;
+      if (!order) {
+        throw new ForbiddenError(
+          "You can only review a product you've purchased and received.",
+        );
+      }
+
+      const isVerifiedPurchase = true;
+      const orderId = order.id;
 
       // Create initial review (auto-approved)
       const review = await prisma.review.create({
@@ -563,6 +570,8 @@ export class ReviewController {
   static async getAllReviews(req: Request, res: Response, next: NextFunction) {
     try {
       const { isApproved, rating, page = 1, limit = 20, search } = req.query;
+      const jwtPayload = (req as any).jwtPayload as JwtPayload;
+      const isSuper = jwtPayload.role === ROLES.SUPERADMIN;
 
       const pageNum = parseInt(page as string);
       const limitNum = parseInt(limit as string);
@@ -570,6 +579,11 @@ export class ReviewController {
 
       // Build filter
       const where: any = {};
+
+      // Vendors only see reviews on their own products.
+      if (!isSuper) {
+        where.product = { ownerId: jwtPayload.userId };
+      }
 
       if (isApproved !== undefined) {
         where.isApproved = isApproved === "true";
@@ -657,6 +671,8 @@ export class ReviewController {
     try {
       const { id } = req.params;
       const { isApproved, adminNote }: ModerateReviewRequest = req.body;
+      const jwtPayload = (req as any).jwtPayload as JwtPayload;
+      const isSuper = jwtPayload.role === ROLES.SUPERADMIN;
 
       const reviewId = parseInt(id);
 
@@ -667,9 +683,15 @@ export class ReviewController {
       // Check if review exists
       const existingReview = await prisma.review.findUnique({
         where: { id: reviewId },
+        include: { product: { select: { ownerId: true } } },
       });
 
       if (!existingReview) {
+        throw new NotFoundError("Review not found");
+      }
+
+      // A vendor may only moderate reviews on their own products.
+      if (!isSuper && existingReview.product?.ownerId !== jwtPayload.userId) {
         throw new NotFoundError("Review not found");
       }
 
@@ -719,13 +741,21 @@ export class ReviewController {
     try {
       const { id } = req.params;
       const reviewId = parseInt(id);
+      const jwtPayload = (req as any).jwtPayload as JwtPayload;
+      const isSuper = jwtPayload.role === ROLES.SUPERADMIN;
 
       // Check if review exists
       const review = await prisma.review.findUnique({
         where: { id: reviewId },
+        include: { product: { select: { ownerId: true } } },
       });
 
       if (!review) {
+        throw new NotFoundError("Review not found");
+      }
+
+      // A vendor may only delete reviews on their own products.
+      if (!isSuper && review.product?.ownerId !== jwtPayload.userId) {
         throw new NotFoundError("Review not found");
       }
 

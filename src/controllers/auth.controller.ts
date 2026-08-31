@@ -6,15 +6,24 @@ import { ResponseUtil } from "../utils/response.util";
 import {
   BadRequestError,
   UnauthorizedError,
+  ForbiddenError,
   ConflictError,
   NotFoundError,
+  TooManyRequestsError,
 } from "../utils/customError.util";
+import {
+  isLoginLocked,
+  registerFailedLogin,
+  clearLoginFailures,
+} from "../middleware/rateLimit";
 import {
   RegisterRequest,
   LoginRequest,
   ForgotPasswordRequest,
   ResetPasswordRequest,
   VerifyEmailRequest,
+  ChangePasswordRequest,
+  UpdateProfileRequest,
   JwtPayload,
 } from "../types/auth.types";
 import { config } from "../config/env.config";
@@ -91,6 +100,7 @@ export class AuthController {
         userId: user.id,
         email: user.email,
         role: user.role,
+        tokenVersion: (user as any).tokenVersion ?? 0,
       });
 
       return ResponseUtil.success(
@@ -119,12 +129,20 @@ export class AuthController {
         throw new BadRequestError("Email and password are required");
       }
 
+      // Per-account lockout after repeated failures (in addition to IP limiting).
+      if (await isLoginLocked(email)) {
+        throw new TooManyRequestsError(
+          "Too many failed login attempts. Please try again in a few minutes.",
+        );
+      }
+
       // Find user
       const user = await prisma.user.findUnique({
         where: { email: email.toLowerCase() },
       });
 
       if (!user || !user.passwordHash) {
+        await registerFailedLogin(email);
         throw new UnauthorizedError("Invalid email or password");
       }
 
@@ -135,14 +153,26 @@ export class AuthController {
       );
 
       if (!isPasswordValid) {
+        await registerFailedLogin(email);
         throw new UnauthorizedError("Invalid email or password");
       }
+
+      // Block deactivated accounts (e.g. a vendor the superadmin turned off).
+      if (!user.isActive) {
+        throw new ForbiddenError(
+          "Your account has been deactivated. Please contact support.",
+        );
+      }
+
+      // Successful login — clear the failure counter.
+      await clearLoginFailures(email);
 
       // Generate JWT token
       const token = AuthService.generateToken({
         userId: user.id,
         email: user.email,
         role: user.role,
+        tokenVersion: (user as any).tokenVersion ?? 0,
       });
 
       return ResponseUtil.success(
@@ -156,6 +186,9 @@ export class AuthController {
             phone: user.phone,
             role: user.role,
             isEmailVerified: user.isEmailVerified,
+            // Vendor (company) branding — used by the admin panel header/sidebar.
+            companyName: user.companyName,
+            logoUrl: user.logoUrl,
           },
           token,
         },
@@ -348,13 +381,14 @@ export class AuthController {
       // Hash new password
       const passwordHash = await AuthService.hashPassword(newPassword);
 
-      // Update password and clear reset token
+      // Update password, clear reset token, and revoke existing sessions.
       await prisma.user.update({
         where: { id: user.id },
         data: {
           passwordHash,
           passwordResetToken: null,
           passwordResetExpiry: null,
+          tokenVersion: { increment: 1 },
         },
       });
 
@@ -388,6 +422,9 @@ export class AuthController {
           phone: true,
           role: true,
           isEmailVerified: true,
+          // Vendor (company) branding — used by the admin panel header/sidebar.
+          companyName: true,
+          logoUrl: true,
           createdAt: true,
           updatedAt: true,
         },
@@ -398,6 +435,123 @@ export class AuthController {
       }
 
       return ResponseUtil.success(res, user, "User retrieved successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // Change own password (any authenticated user — customer / vendor / superadmin)
+  static async changePassword(req: Request, res: Response, next: NextFunction) {
+    try {
+      const jwtPayload = (req as any).jwtPayload as JwtPayload | undefined;
+
+      if (!jwtPayload?.userId) {
+        throw new UnauthorizedError("User not authenticated");
+      }
+
+      const { currentPassword, newPassword }: ChangePasswordRequest = req.body;
+
+      if (!currentPassword || !newPassword) {
+        throw new BadRequestError(
+          "Current password and new password are required"
+        );
+      }
+
+      const user = await prisma.user.findUnique({
+        where: { id: jwtPayload.userId },
+      });
+
+      if (!user) {
+        throw new NotFoundError("User not found");
+      }
+
+      // Google-only accounts have no password to verify against.
+      if (!user.passwordHash) {
+        throw new BadRequestError(
+          "Your account has no password set. Use 'forgot password' to create one."
+        );
+      }
+
+      const isCurrentValid = await AuthService.comparePassword(
+        currentPassword,
+        user.passwordHash
+      );
+
+      if (!isCurrentValid) {
+        throw new UnauthorizedError("Current password is incorrect");
+      }
+
+      if (currentPassword === newPassword) {
+        throw new BadRequestError(
+          "New password must be different from the current password"
+        );
+      }
+
+      const passwordValidation = AuthService.validatePassword(newPassword);
+      if (!passwordValidation.valid) {
+        throw new BadRequestError(
+          passwordValidation.message || "Invalid password"
+        );
+      }
+
+      const passwordHash = await AuthService.hashPassword(newPassword);
+
+      // Bump tokenVersion to revoke all existing sessions (this device included,
+      // which will be logged out on its next request — standard on password change).
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          passwordHash,
+          passwordResetToken: null,
+          passwordResetExpiry: null,
+          tokenVersion: { increment: 1 },
+        },
+      });
+
+      return ResponseUtil.success(res, null, "Password changed successfully");
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // Update own profile (name / phone, plus company fields for vendors).
+  // Email and role are intentionally NOT editable here.
+  static async updateProfile(req: Request, res: Response, next: NextFunction) {
+    try {
+      const jwtPayload = (req as any).jwtPayload as JwtPayload | undefined;
+
+      if (!jwtPayload?.userId) {
+        throw new UnauthorizedError("User not authenticated");
+      }
+
+      const {
+        firstName,
+        lastName,
+        phone,
+        companyName,
+        logoUrl,
+      }: UpdateProfileRequest = req.body;
+
+      // Prisma ignores `undefined` fields, so only provided keys are updated.
+      const user = await prisma.user.update({
+        where: { id: jwtPayload.userId },
+        data: { firstName, lastName, phone, companyName, logoUrl },
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          phone: true,
+          companyName: true,
+          logoUrl: true,
+          role: true,
+          isEmailVerified: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+
+      return ResponseUtil.success(res, user, "Profile updated successfully");
     } catch (error) {
       next(error);
     }
@@ -418,6 +572,7 @@ export class AuthController {
         userId: user.id,
         email: user.email,
         role: user.role,
+        tokenVersion: (user as any).tokenVersion ?? 0,
       });
 
       // Redirect to frontend with token

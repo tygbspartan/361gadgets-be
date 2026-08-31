@@ -1,10 +1,14 @@
 import { Request, Response } from "express";
-import { PrismaClient } from "@prisma/client";
-
-const prisma = new PrismaClient();
+import prisma from "../config/database.config";
+import { ROLES } from "../constants/roles.constants";
+import { JwtPayload } from "../types/auth.types";
 
 export const getDashboardStats = async (req: Request, res: Response) => {
   try {
+    const jwtPayload = (req as any).jwtPayload as JwtPayload | undefined;
+    const isSuper = jwtPayload?.role === ROLES.SUPERADMIN;
+    const ownerId = jwtPayload?.userId;
+
     const { startDate, endDate } = req.query;
 
     // Parse dates or use defaults (last 30 days)
@@ -16,34 +20,22 @@ export const getDashboardStats = async (req: Request, res: Response) => {
     // Set end date to end of day
     end.setHours(23, 59, 59, 999);
 
-    // 1. Get total counts (not date-filtered)
+    // 1. Total counts (not date-filtered). Products/discounts are owner-scoped
+    //    for vendors; brands are a shared/global catalog so they stay platform-wide.
+    const productWhere: any = { isActive: true };
+    const discountWhere: any = { isActive: true };
+    if (!isSuper) {
+      productWhere.ownerId = ownerId;
+      discountWhere.ownerId = ownerId;
+    }
+
     const [totalProducts, totalDiscounts, totalBrands] = await Promise.all([
-      prisma.product.count({
-        where: { isActive: true },
-      }),
-      prisma.discount.count({
-        where: { isActive: true },
-      }),
-      prisma.brand.count({
-        where: { isActive: true },
-      }),
+      prisma.product.count({ where: productWhere }),
+      prisma.discount.count({ where: discountWhere }),
+      prisma.brand.count({ where: { isActive: true } }),
     ]);
 
-    // 2. Get orders by status within date range
-    const ordersInRange = await prisma.order.findMany({
-      where: {
-        createdAt: {
-          gte: start,
-          lte: end,
-        },
-      },
-      select: {
-        status: true,
-        total: true,
-      },
-    });
-
-    // Count orders by status
+    // 2. Orders by status + revenue within the date range
     const ordersByStatus = {
       pending: 0,
       confirmed: 0,
@@ -54,26 +46,67 @@ export const getDashboardStats = async (req: Request, res: Response) => {
     };
 
     let totalRevenue = 0;
+    let totalOrders = 0;
 
-    ordersInRange.forEach((order) => {
-      // Count by status
-      if (ordersByStatus.hasOwnProperty(order.status)) {
-        ordersByStatus[order.status as keyof typeof ordersByStatus]++;
-      }
+    if (isSuper) {
+      // Platform-wide: every order, revenue = full order totals (excl. cancelled).
+      const ordersInRange = await prisma.order.findMany({
+        where: { createdAt: { gte: start, lte: end } },
+        select: { status: true, total: true },
+      });
 
-      // Calculate total revenue (exclude cancelled orders)
-      if (order.status !== "cancelled") {
-        totalRevenue += parseFloat(order.total.toString());
-      }
-    });
+      ordersInRange.forEach((order) => {
+        if (ordersByStatus.hasOwnProperty(order.status)) {
+          ordersByStatus[order.status as keyof typeof ordersByStatus]++;
+        }
+        if (order.status !== "cancelled") {
+          totalRevenue += parseFloat(order.total.toString());
+        }
+      });
 
-    // 3. Total orders in range
-    const totalOrders = ordersInRange.length;
+      totalOrders = ordersInRange.length;
+    } else {
+      // Vendor-scoped: only orders that contain THIS vendor's products.
+      // Revenue = the vendor's share (sum of their order-item subtotals, which
+      // excludes shipping and other vendors' items), excluding cancelled orders.
+      const items = await prisma.orderItem.findMany({
+        where: {
+          product: { ownerId },
+          order: { createdAt: { gte: start, lte: end } },
+        },
+        select: {
+          subtotal: true,
+          order: { select: { id: true, status: true } },
+        },
+      });
+
+      // Count each order once (an order may include several of the vendor's items).
+      const orderStatusById = new Map<number, string>();
+      items.forEach((item) => {
+        if (!orderStatusById.has(item.order.id)) {
+          orderStatusById.set(item.order.id, item.order.status);
+        }
+        if (item.order.status !== "cancelled") {
+          totalRevenue += parseFloat(item.subtotal.toString());
+        }
+      });
+
+      orderStatusById.forEach((status) => {
+        if (ordersByStatus.hasOwnProperty(status)) {
+          ordersByStatus[status as keyof typeof ordersByStatus]++;
+        }
+      });
+
+      totalOrders = orderStatusById.size;
+    }
 
     res.status(200).json({
       status: "success",
       message: "Dashboard stats retrieved successfully",
       data: {
+        // Indicates how the numbers are scoped (handy for the UI label).
+        scope: isSuper ? "platform" : "vendor",
+
         // Top section stats
         totalProducts,
         totalDiscounts,

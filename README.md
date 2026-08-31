@@ -1,6 +1,6 @@
-# Daily Dose - E-commerce Backend API
+# 361 Gadgets - E-commerce Backend API
 
-A complete, production-ready e-commerce backend for pharmaceutical and personal care products in Nepal. Built with Node.js, TypeScript, Express, Prisma, and PostgreSQL.
+A complete, production-ready e-commerce backend for gadgets and electronics in Nepal. Built with Node.js, TypeScript, Express, Prisma, and PostgreSQL.
 
 ---
 
@@ -35,7 +35,7 @@ A complete, production-ready e-commerce backend for pharmaceutical and personal 
 ### 1. Clone & Install
 ```bash
 git clone <repository-url>
-cd dailydose-be
+cd 361-gadgets-be
 npm install
 ```
 
@@ -51,20 +51,18 @@ DATABASE_URL="postgresql://user:password@host:port/database"
 JWT_SECRET=your_secret_min_32_characters
 JWT_EXPIRES_IN=7d
 
-EMAIL_HOST=smtp.gmail.com
-EMAIL_PORT=587
-EMAIL_USER=your_email@gmail.com
-EMAIL_PASSWORD=your_16_char_app_password
-EMAIL_FROM=your_email@gmail.com
+RESEND_API_KEY=re_your_resend_api_key
+EMAIL_FROM=no-reply@yourdomain.com
 
 GOOGLE_CLIENT_ID=your_client_id.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=GOCSPX-your_secret
 GOOGLE_CALLBACK_URL=http://localhost:5000/api/auth/google/callback
 
-ADMIN_EMAIL=admin@dailydose.com
+ADMIN_EMAIL=admin@361gadgets.com
 ADMIN_PASSWORD=secure_admin_password
 ADMIN_FIRST_NAME=Admin
 ADMIN_LAST_NAME=User
+ADMIN_NOTIFICATION_EMAIL=361gadgets.np@gmail.com
 ```
 
 ### 3. Database Setup
@@ -225,21 +223,21 @@ pending → confirmed → processing → shipped → delivered
 
 ### Postman Collections
 Import the provided Postman collections to test all endpoints:
-- `Daily_Dose_Auth.postman_collection.json` - Authentication
-- `Daily_Dose_Products.postman_collection.json` - Products & Catalog
-- `Daily_Dose_Orders.postman_collection.json` - Cart, Orders, Checkout
-- `Daily_Dose_Discounts.postman_collection.json` - Discount codes
-- `Daily_Dose_Reviews.postman_collection.json` - Reviews & Ratings
+- `361_Gadgets_Auth.postman_collection.json` - Authentication
+- `361_Gadgets_Products.postman_collection.json` - Products & Catalog
+- `361_Gadgets_Orders.postman_collection.json` - Cart, Orders, Checkout
+- `361_Gadgets_Discounts.postman_collection.json` - Discount codes
+- `361_Gadgets_Reviews.postman_collection.json` - Reviews & Ratings
 
 ### Test Accounts
-- **Admin**: `admin@dailydose.com` / (your admin password)
+- **Admin**: `admin@361gadgets.com` / (your admin password)
 - **Customer**: Create via `/auth/register`
 
 ---
 
 ## 📁 Project Structure
 ```
-dailydose-be/
+361-gadgets-be/
 ├── prisma/
 │   └── schema.prisma          # Database schema
 ├── src/

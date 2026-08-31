@@ -7,6 +7,7 @@ import {
 import { EmailService } from "./services/email.service";
 import { SeedService } from "./services/seed.service";
 import { getRedisClient } from "./config/redis.config";
+import { logger } from "./utils/logger.util";
 
 // Validate environment variables on startup
 try {
@@ -73,14 +74,15 @@ process.on("SIGTERM", async () => {
   process.exit(0);
 });
 
-// Handle unhandled promise rejections
-process.on("unhandledRejection", (reason: Error) => {
-  console.error("❌ Unhandled Rejection:", reason);
+// Handle unhandled promise rejections — log structured, then exit so the process
+// manager restarts a known-good instance rather than limping along.
+process.on("unhandledRejection", (reason: unknown) => {
+  logger.fatal({ err: reason }, "unhandled promise rejection");
   process.exit(1);
 });
 
 // Handle uncaught exceptions
 process.on("uncaughtException", (error: Error) => {
-  console.error("❌ Uncaught Exception:", error);
+  logger.fatal({ err: error }, "uncaught exception");
   process.exit(1);
 });

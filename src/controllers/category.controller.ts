@@ -89,8 +89,133 @@ export class CategoryController {
         },
       });
 
-      CacheService.invalidatePatternBackground("categories:*");
+      await CacheService.invalidatePattern("categories:*");
       return ResponseUtil.success(res, category, "Category created successfully", 201);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // Bulk create categories (superadmin). All-or-nothing: if any item is invalid,
+  // nothing is created and per-item errors are returned. Parent categories must
+  // already exist in the DB (they can't be referenced from within the same batch).
+  static async bulkCreate(req: Request, res: Response, next: NextFunction) {
+    try {
+      const items: CreateCategoryRequest[] =
+        req.body.categories ?? req.body.items;
+
+      if (!Array.isArray(items) || items.length === 0) {
+        throw new BadRequestError("Provide a non-empty 'categories' array");
+      }
+      if (items.length > 100) {
+        throw new BadRequestError(
+          "Cannot create more than 100 categories at once",
+        );
+      }
+
+      // Pre-fetch referenced parents and existing slugs.
+      const parentIds = [
+        ...new Set(
+          items.map((c) => c?.parentId).filter((v): v is number => !!v),
+        ),
+      ];
+      const desiredSlugs = items
+        .map((c) => c?.slug || (c?.name ? SlugUtil.generateSlug(c.name) : ""))
+        .filter(Boolean);
+
+      const [parents, existing] = await Promise.all([
+        parentIds.length
+          ? prisma.category.findMany({ where: { id: { in: parentIds } } })
+          : Promise.resolve([]),
+        prisma.category.findMany({
+          where: { slug: { in: desiredSlugs } },
+          select: { slug: true },
+        }),
+      ]);
+      const parentMap = new Map(parents.map((p) => [p.id, p]));
+      const existingSlugs = new Set(existing.map((c) => c.slug));
+
+      const errors: { index: number; error: string }[] = [];
+      const prepared: any[] = [];
+      const seenSlugs = new Set<string>();
+
+      items.forEach((c, i) => {
+        if (!c?.name || !String(c.name).trim()) {
+          errors.push({ index: i, error: "name is required" });
+          return;
+        }
+        if (!c.level || ![1, 2, 3].includes(c.level)) {
+          errors.push({ index: i, error: "level must be 1, 2, or 3" });
+          return;
+        }
+        if (c.level > 1 && !c.parentId) {
+          errors.push({
+            index: i,
+            error: `parentId is required for level ${c.level}`,
+          });
+          return;
+        }
+        if (c.parentId) {
+          const parent = parentMap.get(c.parentId);
+          if (!parent) {
+            errors.push({
+              index: i,
+              error: `parent category ${c.parentId} not found`,
+            });
+            return;
+          }
+          if (parent.level !== c.level - 1) {
+            errors.push({
+              index: i,
+              error: `parent must be level ${c.level - 1} for a level ${c.level} category`,
+            });
+            return;
+          }
+        }
+        const slug = c.slug || SlugUtil.generateSlug(c.name);
+        if (existingSlugs.has(slug)) {
+          errors.push({ index: i, error: `slug "${slug}" already exists` });
+          return;
+        }
+        if (seenSlugs.has(slug)) {
+          errors.push({
+            index: i,
+            error: `duplicate slug "${slug}" within the batch`,
+          });
+          return;
+        }
+        seenSlugs.add(slug);
+        prepared.push({
+          name: c.name.trim(),
+          slug,
+          description: c.description,
+          parentId: c.parentId,
+          level: c.level,
+          displayOrder: c.displayOrder || 0,
+        });
+      });
+
+      if (errors.length > 0) {
+        return ResponseUtil.badRequest(
+          res,
+          `Bulk create failed for ${errors.length} of ${items.length} item(s). No categories were created.`,
+          errors,
+        );
+      }
+
+      const created = await prisma.$transaction(
+        prepared.map((data) =>
+          prisma.category.create({ data, include: { parent: true } }),
+        ),
+      );
+
+      await CacheService.invalidatePattern("categories:*");
+      return ResponseUtil.success(
+        res,
+        { count: created.length, categories: created },
+        `${created.length} category(ies) created successfully`,
+        201,
+      );
     } catch (error) {
       next(error);
     }
@@ -311,7 +436,7 @@ export class CategoryController {
         },
       });
 
-      CacheService.invalidatePatternBackground("categories:*");
+      await CacheService.invalidatePattern("categories:*");
       return ResponseUtil.success(res, category, "Category updated successfully");
     } catch (error) {
       next(error);
@@ -357,7 +482,7 @@ export class CategoryController {
         where: { id: parseInt(id) },
       });
 
-      CacheService.invalidatePatternBackground("categories:*");
+      await CacheService.invalidatePattern("categories:*");
       return ResponseUtil.success(res, null, "Category deleted successfully");
     } catch (error) {
       next(error);

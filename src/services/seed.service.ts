@@ -6,22 +6,17 @@ export class SeedService {
   // Create admin user if it doesn't exist
   static async createAdminUser(): Promise<void> {
     try {
-      console.log("🔍 Checking for admin user...");
-
       // Check if admin already exists
       const existingAdmin = await prisma.user.findUnique({
         where: { email: config.adminEmail },
       });
 
-      if (existingAdmin) {
-        console.log("✅ Admin user already exists");
-        return;
-      }
+      if (existingAdmin) return;
 
       // Create admin user
       const passwordHash = await AuthService.hashPassword(config.adminPassword);
 
-      const admin = await prisma.user.create({
+      await prisma.user.create({
         data: {
           email: config.adminEmail,
           passwordHash,
@@ -32,9 +27,7 @@ export class SeedService {
         },
       });
 
-      console.log("✅ Admin user created successfully");
-      console.log(`   Email: ${admin.email}`);
-      console.log(`   Role: ${admin.role}`);
+      console.log("✅ Admin user created");
     } catch (error) {
       console.error("❌ Failed to create admin user:", error);
       throw error;

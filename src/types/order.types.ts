@@ -20,8 +20,9 @@ export interface CheckoutRequest {
   /**
    * Items to check out for GUEST checkout (no auth token).
    * Logged-in users ignore this and use their DB cart instead.
+   * `colorId` is required when the product has color variants.
    */
-  items?: { productId: number; quantity: number }[];
+  items?: { productId: number; quantity: number; colorId?: number }[];
 }
 
 export interface UpdateOrderStatusRequest {
@@ -77,7 +78,8 @@ export interface OrderItemResponse {
   productName: string;
   productSku: string | null;
   productImage: string | null;
-  productSize: string | null;
+  colorName: string | null;
+  colorId: number | null;
   price: number;
   quantity: number;
   subtotal: number;

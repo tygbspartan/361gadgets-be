@@ -16,9 +16,16 @@ const app: Application = express();
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 
 // Middleware
+// Explicit CORS allowlist from env (never "*" or a reflected origin). Requests
+// with no Origin header (curl, server-to-server, health checks) are allowed.
 app.use(
   cors({
-    origin: config.clientUrl,
+    origin: (origin, callback) => {
+      if (!origin || config.corsOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error(`Origin ${origin} not allowed by CORS`));
+    },
     credentials: true,
   })
 );

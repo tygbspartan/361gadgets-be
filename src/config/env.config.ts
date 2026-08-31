@@ -7,6 +7,7 @@ interface EnvConfig {
   port: number;
   nodeEnv: string;
   clientUrl: string;
+  corsOrigins: string[];
   
   // JWT
   jwtSecret: string;
@@ -15,11 +16,8 @@ interface EnvConfig {
   // Database
   databaseUrl: string;
   
-  // Email (Gmail SMTP)
-  emailHost: string;
-  emailPort: number;
-  emailUser: string;
-  emailPassword: string;
+  // Email (Resend)
+  resendApiKey: string;
   emailFrom: string;
   
   // Google OAuth
@@ -32,6 +30,9 @@ interface EnvConfig {
   adminPassword: string;
   adminFirstName: string;
   adminLastName: string;
+
+  // Where admin/platform notification emails are delivered
+  adminNotificationEmail: string;
   
   // Token Expiry
   verificationTokenExpiry: string;
@@ -59,6 +60,12 @@ export const config: EnvConfig = {
   port: parseInt(getEnvVariable('PORT', '5000')),
   nodeEnv: getEnvVariable('NODE_ENV', 'development'),
   clientUrl: getEnvVariable('CLIENT_URL', 'http://localhost:3000'),
+  // Explicit CORS allowlist. Defaults to CLIENT_URL; set CORS_ORIGINS to a
+  // comma-separated list when more than one origin (e.g. staging + prod) is allowed.
+  corsOrigins: (process.env.CORS_ORIGINS || process.env.CLIENT_URL || 'http://localhost:3000')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean),
   
   // JWT
   jwtSecret: getEnvVariable('JWT_SECRET'),
@@ -67,11 +74,8 @@ export const config: EnvConfig = {
   // Database
   databaseUrl: getEnvVariable('DATABASE_URL'),
   
-  // Email
-  emailHost: getEnvVariable('EMAIL_HOST', 'smtp.gmail.com'),
-  emailPort: parseInt(getEnvVariable('EMAIL_PORT', '587')),
-  emailUser: getEnvVariable('EMAIL_USER'),
-  emailPassword: getEnvVariable('EMAIL_PASSWORD'),
+  // Email (Resend)
+  resendApiKey: getEnvVariable('RESEND_API_KEY'),
   emailFrom: getEnvVariable('EMAIL_FROM'),
   
   // Google OAuth
@@ -84,6 +88,9 @@ export const config: EnvConfig = {
   adminPassword: getEnvVariable('ADMIN_PASSWORD'),
   adminFirstName: getEnvVariable('ADMIN_FIRST_NAME', 'Admin'),
   adminLastName: getEnvVariable('ADMIN_LAST_NAME', 'User'),
+
+  // Recipient for admin notifications (new orders, catalog requests, etc.)
+  adminNotificationEmail: getEnvVariable('ADMIN_NOTIFICATION_EMAIL', '361gadgets.np@gmail.com'),
   
   // Token Expiry
   verificationTokenExpiry: getEnvVariable('VERIFICATION_TOKEN_EXPIRY', '24h'),
@@ -100,39 +107,41 @@ export const config: EnvConfig = {
 
 // Validate critical env variables on startup
 export const validateEnv = (): void => {
-  console.log('🔍 Validating environment variables...');
-  
-  // Critical variables
+  // Required in every environment.
   const criticalVars = [
     'JWT_SECRET',
     'DATABASE_URL',
-    'EMAIL_USER',
-    'EMAIL_PASSWORD',
+    'RESEND_API_KEY',
+    'EMAIL_FROM',
     'GOOGLE_CLIENT_ID',
     'GOOGLE_CLIENT_SECRET',
+    'GOOGLE_CALLBACK_URL',
     'ADMIN_EMAIL',
     'ADMIN_PASSWORD',
     'SUPABASE_URL',
     'SUPABASE_SERVICE_ROLE_KEY',
   ];
-  
-  const missing: string[] = [];
-  
-  criticalVars.forEach(varName => {
-    if (!process.env[varName]) {
-      missing.push(varName);
-    }
-  });
-  
+
+  // Additionally required in production — these have dev-friendly defaults that
+  // must never be used against real infrastructure.
+  const productionVars = [
+    'CLIENT_URL',        // used for OAuth redirects + email links
+    'DIRECT_URL',        // Prisma migrations (non-pooled connection)
+    'SUPABASE_STORAGE_BUCKET',
+  ];
+
+  const required =
+    config.nodeEnv === 'production'
+      ? [...criticalVars, ...productionVars]
+      : criticalVars;
+
+  const missing = required.filter((varName) => !process.env[varName]);
+
   if (missing.length > 0) {
     console.error('❌ Missing required environment variables:');
     missing.forEach(varName => console.error(`   - ${varName}`));
     throw new Error('Environment validation failed');
   }
-  
-  console.log('✅ Environment variables validated');
-  console.log(`📍 Environment: ${config.nodeEnv}`);
-  console.log(`🚪 Port: ${config.port}`);
-  console.log(`📧 Email: ${config.emailUser}`);
-  console.log(`👤 Admin: ${config.adminEmail}`);
+
+  console.log(`✅ Environment validated (${config.nodeEnv})`);
 };

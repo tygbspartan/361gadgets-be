@@ -1,5 +1,6 @@
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
 import { config } from "../config/env.config";
+import { logger } from "../utils/logger.util";
 
 interface EmailOptions {
   to: string;
@@ -7,46 +8,44 @@ interface EmailOptions {
   html: string;
 }
 
+const resend = new Resend(config.resendApiKey);
+
 export class EmailService {
-  private static transporter = nodemailer.createTransport({
-    host: config.emailHost,
-    port: config.emailPort,
-    secure: false, // true for 465, false for other ports
-    auth: {
-      user: config.emailUser,
-      pass: config.emailPassword,
-    },
-  });
+  // Central send via Resend. `from` must use a domain verified in Resend
+  // (or onboarding@resend.dev for testing). Configured via EMAIL_FROM.
+  private static async send(mail: {
+    to: string;
+    subject: string;
+    html: string;
+  }): Promise<void> {
+    const { data, error } = await resend.emails.send({
+      from: `361 Gadgets <${config.emailFrom}>`,
+      to: mail.to,
+      subject: mail.subject,
+      html: mail.html,
+    });
 
-  // Add this function with your other email functions
-  static async sendEmail(options: EmailOptions): Promise<void> {
-    try {
-      await this.transporter.verify();
-      const mailOptions = {
-        from: `"Daily Dose" <${config.emailFrom}>`,
-        to: options.to,
-        subject: options.subject,
-        html: options.html,
-      };
-
-      await this.transporter.sendMail(mailOptions);
-      console.log(`Email sent successfully to ${options.to}`);
-    } catch (error) {
-      console.error("Error sending email:", error);
-      throw new Error("Failed to send email");
+    if (error) {
+      logger.warn({ to: mail.to, err: error.message }, "email send failed");
+      throw new Error(`Failed to send email: ${error.message}`);
     }
+
+    logger.debug({ to: mail.to }, "email sent");
   }
 
-  // Test email configuration
+  // Generic send used across the app.
+  static async sendEmail(options: EmailOptions): Promise<void> {
+    await this.send(options);
+  }
+
+  // Resend has no persistent connection to "verify" — confirm the key is set.
   static async testConnection(): Promise<boolean> {
-    try {
-      await this.transporter.verify();
-      console.log("✅ Email service connected successfully");
-      return true;
-    } catch (error) {
-      console.error("❌ Email service connection failed:", error);
+    if (!config.resendApiKey) {
+      console.error("❌ RESEND_API_KEY is not set");
       return false;
     }
+    console.log("✅ Email service (Resend) configured");
+    return true;
   }
 
   // Send verification email
@@ -57,9 +56,9 @@ export class EmailService {
     const verificationUrl = `${config.clientUrl}/verify-email?token=${token}`;
 
     const mailOptions = {
-      from: `"Daily Dose" <${config.emailFrom}>`,
+      from: `"361 Gadgets" <${config.emailFrom}>`,
       to: email,
-      subject: "Verify Your Email - Daily Dose",
+      subject: "Verify Your Email - 361 Gadgets",
       html: `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -76,8 +75,8 @@ export class EmailService {
           <!-- Header -->
           <tr>
             <td align="center" style="background:linear-gradient(135deg,#16a34a,#15803d);padding:36px 40px;">
-              <h1 style="margin:0;color:#ffffff;font-size:28px;font-weight:700;letter-spacing:-0.5px;">Daily Dose</h1>
-              <p style="margin:6px 0 0;color:#bbf7d0;font-size:13px;letter-spacing:1px;text-transform:uppercase;">Premium Pharmaceutical Cosmetics</p>
+              <h1 style="margin:0;color:#ffffff;font-size:28px;font-weight:700;letter-spacing:-0.5px;">361 Gadgets</h1>
+              <p style="margin:6px 0 0;color:#bbf7d0;font-size:13px;letter-spacing:1px;text-transform:uppercase;">Premium Gadgets &amp; Electronics</p>
             </td>
           </tr>
 
@@ -123,7 +122,7 @@ export class EmailService {
           <tr>
             <td style="background-color:#f9fafb;padding:24px 48px;border-top:1px solid #e5e7eb;">
               <p style="margin:0;font-size:12px;color:#9ca3af;text-align:center;">
-                If you didn't create a Daily Dose account, you can safely ignore this email.
+                If you didn't create a 361 Gadgets account, you can safely ignore this email.
               </p>
             </td>
           </tr>
@@ -136,8 +135,7 @@ export class EmailService {
 </html>`,
     };
 
-    await this.transporter.sendMail(mailOptions);
-    console.log(`📧 Verification email sent to: ${email}`);
+    await this.send(mailOptions);
   }
 
   // Send password reset email
@@ -148,9 +146,9 @@ export class EmailService {
     const resetUrl = `${config.clientUrl}/reset-password?token=${token}`;
 
     const mailOptions = {
-      from: `"Daily Dose" <${config.emailFrom}>`,
+      from: `"361 Gadgets" <${config.emailFrom}>`,
       to: email,
-      subject: "Reset Your Password - Daily Dose",
+      subject: "Reset Your Password - 361 Gadgets",
       html: `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -167,7 +165,7 @@ export class EmailService {
           <!-- Header -->
           <tr>
             <td align="center" style="background:linear-gradient(135deg,#dc2626,#b91c1c);padding:36px 40px;">
-              <h1 style="margin:0;color:#ffffff;font-size:28px;font-weight:700;letter-spacing:-0.5px;">Daily Dose</h1>
+              <h1 style="margin:0;color:#ffffff;font-size:28px;font-weight:700;letter-spacing:-0.5px;">361 Gadgets</h1>
               <p style="margin:6px 0 0;color:#fecaca;font-size:13px;letter-spacing:1px;text-transform:uppercase;">Password Reset Request</p>
             </td>
           </tr>
@@ -177,7 +175,7 @@ export class EmailService {
             <td style="padding:40px 48px 32px;">
               <h2 style="margin:0 0 12px;color:#111827;font-size:22px;font-weight:600;">Reset your password</h2>
               <p style="margin:0 0 28px;color:#6b7280;font-size:15px;line-height:1.7;">
-                We received a request to reset the password for your Daily Dose account. Click the button below to choose a new password.
+                We received a request to reset the password for your 361 Gadgets account. Click the button below to choose a new password.
               </p>
 
               <!-- Button -->
@@ -212,7 +210,7 @@ export class EmailService {
           <tr>
             <td style="background-color:#f9fafb;padding:24px 48px;border-top:1px solid #e5e7eb;">
               <p style="margin:0;font-size:12px;color:#9ca3af;text-align:center;">
-                For security, this link can only be used once. If you need help, contact us at <a href="mailto:${config.emailUser}" style="color:#6b7280;">${config.emailUser}</a>.
+                For security, this link can only be used once. If you need help, contact us at <a href="mailto:${config.adminNotificationEmail}" style="color:#6b7280;">${config.adminNotificationEmail}</a>.
               </p>
             </td>
           </tr>
@@ -225,8 +223,7 @@ export class EmailService {
 </html>`,
     };
 
-    await this.transporter.sendMail(mailOptions);
-    console.log(`📧 Password reset email sent to: ${email}`);
+    await this.send(mailOptions);
   }
 
   // Send welcome email (after verification)
@@ -237,15 +234,15 @@ export class EmailService {
     const name = firstName || "there";
 
     const mailOptions = {
-      from: `"Daily Dose" <${config.emailFrom}>`,
+      from: `"361 Gadgets" <${config.emailFrom}>`,
       to: email,
-      subject: "Welcome to Daily Dose!",
+      subject: "Welcome to 361 Gadgets!",
       html: `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Welcome to Daily Dose</title>
+  <title>Welcome to 361 Gadgets</title>
 </head>
 <body style="margin:0;padding:0;background-color:#f4f7f6;font-family:'Segoe UI',Arial,sans-serif;">
   <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f7f6;padding:40px 0;">
@@ -256,8 +253,8 @@ export class EmailService {
           <!-- Header -->
           <tr>
             <td align="center" style="background:linear-gradient(135deg,#16a34a,#15803d);padding:36px 40px;">
-              <h1 style="margin:0;color:#ffffff;font-size:28px;font-weight:700;letter-spacing:-0.5px;">Daily Dose</h1>
-              <p style="margin:6px 0 0;color:#bbf7d0;font-size:13px;letter-spacing:1px;text-transform:uppercase;">Premium Pharmaceutical Cosmetics</p>
+              <h1 style="margin:0;color:#ffffff;font-size:28px;font-weight:700;letter-spacing:-0.5px;">361 Gadgets</h1>
+              <p style="margin:6px 0 0;color:#bbf7d0;font-size:13px;letter-spacing:1px;text-transform:uppercase;">Premium Gadgets &amp; Electronics</p>
             </td>
           </tr>
 
@@ -266,7 +263,7 @@ export class EmailService {
             <td style="padding:40px 48px 32px;">
               <h2 style="margin:0 0 12px;color:#111827;font-size:22px;font-weight:600;">Welcome, ${name}!</h2>
               <p style="margin:0 0 24px;color:#6b7280;font-size:15px;line-height:1.7;">
-                Your email has been verified and your account is now active. You're all set to explore our collection of premium pharmaceutical cosmetics.
+                Your email has been verified and your account is now active. You're all set to explore our collection of premium gadgets and electronics.
               </p>
 
               <!-- Features row -->
@@ -294,7 +291,7 @@ export class EmailService {
 
               <div style="background-color:#f0fdf4;border-left:4px solid #16a34a;border-radius:4px;padding:14px 18px;">
                 <p style="margin:0;font-size:13px;color:#15803d;font-weight:500;">
-                  Start browsing — your next daily dose is waiting.
+                  Start browsing — your next gadget is waiting.
                 </p>
               </div>
             </td>
@@ -304,7 +301,7 @@ export class EmailService {
           <tr>
             <td style="background-color:#f9fafb;padding:24px 48px;border-top:1px solid #e5e7eb;">
               <p style="margin:0;font-size:12px;color:#9ca3af;text-align:center;">
-                Thank you for choosing Daily Dose. Questions? Reply to this email or reach us at <a href="mailto:${config.emailUser}" style="color:#6b7280;">${config.emailUser}</a>.
+                Thank you for choosing 361 Gadgets. Questions? Reply to this email or reach us at <a href="mailto:${config.adminNotificationEmail}" style="color:#6b7280;">${config.adminNotificationEmail}</a>.
               </p>
             </td>
           </tr>
@@ -317,7 +314,6 @@ export class EmailService {
 </html>`,
     };
 
-    await this.transporter.sendMail(mailOptions);
-    console.log(`📧 Welcome email sent to: ${email}`);
+    await this.send(mailOptions);
   }
 }

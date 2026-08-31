@@ -12,13 +12,19 @@ import {
   ApplyDiscountRequest,
 } from "../types/discount.types";
 import { JwtPayload } from "../types/auth.types";
+import { assertOwnership } from "../utils/ownership.util";
+import { ROLES } from "../constants/roles.constants";
+
+// Forbidden message reused across owner-scoped discount actions
+const DISCOUNT_FORBIDDEN = "You can only manage your own discounts.";
 
 export class DiscountController {
   // ==================== ADMIN ENDPOINTS ====================
 
-  // Create discount (Admin)
+  // Create discount (Admin/Vendor)
   static async create(req: Request, res: Response, next: NextFunction) {
     try {
+      const jwtPayload = (req as any).jwtPayload as JwtPayload;
       const {
         name,
         code,
@@ -76,6 +82,7 @@ export class DiscountController {
               in: productIds,
             },
           },
+          select: { id: true, ownerId: true },
         });
 
         if (products.length !== productIds.length) {
@@ -85,9 +92,19 @@ export class DiscountController {
             `Products with IDs ${missingIds.join(", ")} not found`,
           );
         }
+
+        // A vendor may only attach a discount to their own products
+        if (jwtPayload.role !== ROLES.SUPERADMIN) {
+          const foreign = products.filter((p) => p.ownerId !== jwtPayload.userId);
+          if (foreign.length > 0) {
+            throw new BadRequestError(
+              "You can only attach discounts to your own products",
+            );
+          }
+        }
       }
 
-      // Create discount
+      // Create discount (owned by the creating vendor)
       const discount = await prisma.discount.create({
         data: {
           name,
@@ -99,6 +116,7 @@ export class DiscountController {
           startDate: start,
           endDate: end,
           usageLimit,
+          ownerId: jwtPayload.userId,
         },
       });
 
@@ -144,13 +162,17 @@ export class DiscountController {
     }
   }
 
-  // Get all discounts (Admin)
+  // Get all discounts (Admin/Vendor — scoped to owner)
   static async getAll(req: Request, res: Response, next: NextFunction) {
     try {
+      const jwtPayload = (req as any).jwtPayload as JwtPayload;
       const { isActive, type, search } = req.query;
 
-      // Build filter
+      // Build filter — vendors only see their own discounts
       const where: any = {};
+      if (jwtPayload.role !== ROLES.SUPERADMIN) {
+        where.ownerId = jwtPayload.userId;
+      }
 
       if (isActive !== undefined) {
         where.isActive = isActive === "true";
@@ -235,6 +257,12 @@ export class DiscountController {
         throw new NotFoundError("Discount not found");
       }
 
+      assertOwnership(
+        discount.ownerId,
+        (req as any).jwtPayload as JwtPayload,
+        DISCOUNT_FORBIDDEN,
+      );
+
       return ResponseUtil.success(
         res,
         discount,
@@ -261,6 +289,13 @@ export class DiscountController {
       if (!existingDiscount) {
         throw new NotFoundError("Discount not found");
       }
+
+      // A vendor may only edit their own discount (superadmin bypasses).
+      assertOwnership(
+        existingDiscount.ownerId,
+        (req as any).jwtPayload as JwtPayload,
+        DISCOUNT_FORBIDDEN,
+      );
 
       // Check if code is being updated and already exists
       if (updateData.code && updateData.code !== existingDiscount.code) {
@@ -289,6 +324,9 @@ export class DiscountController {
 
       // Update discount
       const dataToUpdate: any = { ...updateData };
+
+      // Never let the owner be reassigned via the request body.
+      delete dataToUpdate.ownerId;
 
       if (updateData.code) {
         dataToUpdate.code = updateData.code.toUpperCase();
@@ -343,6 +381,13 @@ export class DiscountController {
       if (!discount) {
         throw new NotFoundError("Discount not found");
       }
+
+      // A vendor may only delete their own discount (superadmin bypasses).
+      assertOwnership(
+        discount.ownerId,
+        (req as any).jwtPayload as JwtPayload,
+        DISCOUNT_FORBIDDEN,
+      );
 
       // Delete discount (cascade will delete product links)
       await prisma.discount.delete({

@@ -153,7 +153,7 @@ export class WishlistController {
   static async bulkMoveToCart(req: Request, res: Response, next: NextFunction) {
     try {
       const { items } = req.body as {
-        items: { wishlistItemId: number; quantity?: number; size?: string }[];
+        items: { wishlistItemId: number; quantity?: number; colorId?: number }[];
       };
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
       const userId = jwtPayload.userId;
@@ -166,12 +166,12 @@ export class WishlistController {
       const wishlistItemIds = items.map((i) => i.wishlistItemId);
       const wishlistItems = await prisma.wishlistItem.findMany({
         where: { id: { in: wishlistItemIds }, userId },
-        include: { product: true },
+        include: { product: { include: { colors: true } } },
       });
       const wishlistMap = new Map(wishlistItems.map((w) => [w.id, w]));
 
       // Validate each requested item, collect valid ones and failures
-      const validItems: { wishlistItem: (typeof wishlistItems)[0]; quantity: number; size: string | null }[] = [];
+      const validItems: { wishlistItem: (typeof wishlistItems)[0]; quantity: number; colorId: number | null }[] = [];
       const failed: { wishlistItemId: number; reason: string }[] = [];
 
       for (const reqItem of items) {
@@ -183,38 +183,41 @@ export class WishlistController {
           continue;
         }
 
-        // Validate size against product's available sizes
-        const productSizes: string[] | null = wishlistItem.product.sizes
-          ? JSON.parse(wishlistItem.product.sizes)
-          : null;
+        // Resolve color variant (required when the product has colors).
+        const colors = wishlistItem.product.colors;
+        let colorId: number | null = null;
+        let availableStock = wishlistItem.product.stockQuantity;
 
-        if (productSizes && productSizes.length > 0) {
-          if (!reqItem.size) {
+        if (colors.length > 0) {
+          if (!reqItem.colorId) {
             failed.push({
               wishlistItemId: reqItem.wishlistItemId,
-              reason: `Size is required. Available: ${productSizes.join(", ")}`,
+              reason: `Color is required. Available: ${colors.map((c) => c.name).join(", ")}`,
             });
             continue;
           }
-          if (!productSizes.includes(reqItem.size)) {
+          const color = colors.find((c) => c.id === reqItem.colorId);
+          if (!color) {
             failed.push({
               wishlistItemId: reqItem.wishlistItemId,
-              reason: `Invalid size "${reqItem.size}". Available: ${productSizes.join(", ")}`,
+              reason: `Invalid color for this product`,
             });
             continue;
           }
+          colorId = color.id;
+          availableStock = color.stockQuantity;
         }
 
         // Check stock
-        if (wishlistItem.product.stockQuantity < quantity) {
+        if (availableStock < quantity) {
           failed.push({
             wishlistItemId: reqItem.wishlistItemId,
-            reason: `Insufficient stock (available: ${wishlistItem.product.stockQuantity})`,
+            reason: `Insufficient stock (available: ${availableStock})`,
           });
           continue;
         }
 
-        validItems.push({ wishlistItem, quantity, size: reqItem.size ?? null });
+        validItems.push({ wishlistItem, quantity, colorId });
       }
 
       if (validItems.length === 0) {
@@ -229,9 +232,9 @@ export class WishlistController {
       const movedCartItems = await prisma.$transaction(async (tx) => {
         const results = [];
 
-        for (const { wishlistItem, quantity, size } of validItems) {
+        for (const { wishlistItem, quantity, colorId } of validItems) {
           const existingCartItem = await tx.cartItem.findFirst({
-            where: { userId, productId: wishlistItem.productId, size },
+            where: { userId, productId: wishlistItem.productId, colorId },
           });
 
           let cartItem;
@@ -242,7 +245,7 @@ export class WishlistController {
             });
           } else {
             cartItem = await tx.cartItem.create({
-              data: { userId, productId: wishlistItem.productId, quantity, size },
+              data: { userId, productId: wishlistItem.productId, quantity, colorId },
             });
           }
 
@@ -272,7 +275,7 @@ export class WishlistController {
   static async moveToCart(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
-      const { quantity = 1 } = req.body;
+      const { quantity = 1, colorId } = req.body;
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
 
       const wishlistItemId = parseInt(id);
@@ -280,26 +283,45 @@ export class WishlistController {
       // Get wishlist item
       const wishlistItem = await prisma.wishlistItem.findUnique({
         where: { id: wishlistItemId },
-        include: { product: true },
+        include: { product: { include: { colors: true } } },
       });
 
       if (!wishlistItem || wishlistItem.userId !== jwtPayload.userId) {
         throw new NotFoundError("Wishlist item not found");
       }
 
+      // Resolve color variant (required when the product has colors).
+      const colors = wishlistItem.product.colors;
+      let selectedColorId: number | null = null;
+      let availableStock = wishlistItem.product.stockQuantity;
+
+      if (colors.length > 0) {
+        if (!colorId) {
+          throw new BadRequestError(
+            `Please select a color. Available: ${colors.map((c) => c.name).join(", ")}`
+          );
+        }
+        const color = colors.find((c) => c.id === colorId);
+        if (!color) {
+          throw new BadRequestError("Invalid color for this product");
+        }
+        selectedColorId = color.id;
+        availableStock = color.stockQuantity;
+      }
+
       // Check stock
-      if (wishlistItem.product.stockQuantity < quantity) {
+      if (availableStock < quantity) {
         throw new BadRequestError("Product out of stock");
       }
 
       // Add to cart and remove from wishlist in transaction
       const result = await prisma.$transaction(async (prisma) => {
-        // Check if already in cart (no size — wishlist move doesn't select a size)
+        // Check if already in cart for this product + color
         const existingCartItem = await prisma.cartItem.findFirst({
           where: {
             userId: jwtPayload.userId,
             productId: wishlistItem.productId,
-            size: null,
+            colorId: selectedColorId,
           },
         });
 
@@ -317,6 +339,7 @@ export class WishlistController {
               userId: jwtPayload.userId,
               productId: wishlistItem.productId,
               quantity: quantity,
+              colorId: selectedColorId,
             },
           });
         }

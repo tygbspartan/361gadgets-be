@@ -44,6 +44,7 @@ export interface CreateBrandRequest {
   metaTitle?: string;
   metaDescription?: string;
   isFeatured?: boolean;
+  ownerId?: number | null; // vendor this brand is reserved for (superadmin sets)
 }
 
 export interface UpdateBrandRequest {
@@ -55,6 +56,7 @@ export interface UpdateBrandRequest {
   isFeatured?: boolean;
   metaTitle?: string;
   metaDescription?: string;
+  ownerId?: number | null; // reassign / clear brand ownership (superadmin)
 }
 
 export interface BrandResponse {
@@ -72,6 +74,17 @@ export interface BrandResponse {
 
 // ==================== PRODUCT TYPES ====================
 
+// Optional color variant (electronics). If a product has colors, each color
+// carries its own stock; omit colors for a simple single-stock product.
+export interface ProductColorRequest {
+  name: string;
+  hexCode?: string;
+  sku?: string;
+  imageUrl?: string;
+  stockQuantity: number;
+  displayOrder?: number;
+}
+
 export interface CreateProductRequest {
   name: string;
   longDescription: string;
@@ -87,9 +100,7 @@ export interface CreateProductRequest {
   isActive?: boolean;
   isFeatured?: boolean;
   homepageFeature?: boolean;
-  sizes?: string[];
-  skinType?: string[];
-  skinConcern?: string[];
+  colors?: ProductColorRequest[];
   metaTitle?: string;
   metaDescription?: string;
   images?: {
@@ -119,9 +130,7 @@ export interface UpdateProductRequest {
   isActive?: boolean;
   isFeatured?: boolean;
   homepageFeature?: boolean;
-  sizes?: string[];
-  skinType?: string[];
-  skinConcern?: string[];
+  colors?: ProductColorRequest[];
   metaTitle?: string;
   metaDescription?: string;
   images?: {
@@ -163,7 +172,6 @@ export interface ProductResponse {
 
   longDescription: string | null;
   countryOfOrigin: string | null;
-  sizes: string[] | null;
 
   stockQuantity: number;
   lowStockThreshold: number;
@@ -173,8 +181,6 @@ export interface ProductResponse {
   isFeatured: boolean;
   homepageFeature: boolean;
   badges: string[] | null;
-  skinType: string[] | null;
-  skinConcern: string[] | null;
 
   discountPercentage?: number; // Calculated field
 
@@ -185,6 +191,17 @@ export interface ProductResponse {
   category?: CategoryResponse;
   images?: ProductImageResponse[];
   specifications?: ProductSpecificationResponse[];
+  colors?: ProductColorResponse[];
+}
+
+export interface ProductColorResponse {
+  id: number;
+  name: string;
+  hexCode: string | null;
+  sku: string | null;
+  imageUrl: string | null;
+  stockQuantity: number;
+  displayOrder: number;
 }
 
 export interface ProductImageResponse {

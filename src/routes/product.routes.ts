@@ -8,13 +8,18 @@ const router = Router();
 // ==================== PUBLIC ROUTES ====================
 router.get("/", ProductController.getAll);
 router.get("/discounted", ProductController.getDiscountedProducts);
+router.get("/compare", ProductController.compare);
 router.get("/slug/:slug", ProductController.getBySlug);
 router.get("/:id/images", ProductController.getImages);
 router.get("/:id/specifications", ProductController.getSpecifications);
 
 // ==================== ADMIN ROUTES ====================
 
+// Vendor-scoped product list for the admin panel (own products; superadmin sees all)
+router.get("/admin/list", authenticate, isAdmin, ProductController.getAdminProducts);
+
 // Product CRUD
+router.post("/bulk", authenticate, isAdmin, ProductController.bulkCreate);
 router.post("/", authenticate, isAdmin, ProductController.create);
 router.get("/:id", authenticate, isAdmin, ProductController.getById);
 router.put("/:id", authenticate, isAdmin, ProductController.update);

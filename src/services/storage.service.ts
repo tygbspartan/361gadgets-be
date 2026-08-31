@@ -15,7 +15,7 @@ export const StorageService = {
    */
   async uploadImage(
     file: Express.Multer.File,
-    folder: "products" | "brands" | "categories" | "hero" = "products",
+    folder: "products" | "brands" | "categories" | "hero" | "vendors" = "products",
   ): Promise<string> {
     const ext = file.originalname.split(".").pop()?.toLowerCase() || "jpg";
     const filename = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
@@ -33,6 +33,16 @@ export const StorageService = {
 
     const { data } = supabase.storage.from(BUCKET).getPublicUrl(filename);
     return data.publicUrl;
+  },
+
+  /**
+   * Readiness probe — confirms the storage bucket is reachable. Throws on error.
+   */
+  async healthCheck(): Promise<void> {
+    const { error } = await supabase.storage.from(BUCKET).list("", { limit: 1 });
+    if (error) {
+      throw new Error(`Storage unreachable: ${error.message}`);
+    }
   },
 
   /**

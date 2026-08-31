@@ -7,6 +7,7 @@ import {
   BadRequestError,
   NotFoundError,
   ConflictError,
+  ForbiddenError,
 } from "../utils/customError.util";
 import {
   CreateProductRequest,
@@ -16,47 +17,120 @@ import {
 } from "../types/product.types";
 import { StorageService } from "../services/storage.service";
 import { CacheService, TTL } from "../services/cache.service";
+import { JwtPayload } from "../types/auth.types";
+import { assertOwnership } from "../utils/ownership.util";
+import { ROLES } from "../constants/roles.constants";
 
 // Helper function to parse JSON fields
 const parseProductArrays = (product: any) => {
   return { ...product };
 };
 
-const ALLOWED_SKIN_TYPES = ["Normal", "Dry", "Oily", "Combination", "Sensitive"] as const;
+// ── Color variant helpers ─────────────────────────────────────────────────
+import type { ProductColorRequest } from "../types/product.types";
 
-const ALLOWED_SKIN_CONCERNS = [
-  "Acne & Breakouts",
-  "Oil Control",
-  "Large Pores",
-  "Dryness",
-  "Dehydration",
-  "Sensitivity & Redness",
-  "Dark Spots & Hyperpigmentation",
-  "Uneven Skin Tone",
-  "Dullness & Brightening",
-  "Uneven Texture",
-  "Fine Lines & Wrinkles",
-  "Firmness & Elasticity",
-  "Dark Circles",
-  "Puffiness",
-  "Sun Protection",
-] as const;
-
-function validateSkinValues(
-  values: string[],
-  allowed: readonly string[],
-  fieldName: string,
-): void {
-  const invalid = values.filter((v) => !allowed.includes(v as any));
-  if (invalid.length > 0) {
-    throw new Error(`Invalid ${fieldName} value(s): ${invalid.join(", ")}`);
+// Validate an optional list of color variants.
+function validateColors(colors?: ProductColorRequest[]): void {
+  if (!colors) return;
+  for (const c of colors) {
+    if (!c.name || !c.name.trim()) {
+      throw new BadRequestError("Each color variant must have a name");
+    }
+    if (
+      c.stockQuantity === undefined ||
+      c.stockQuantity === null ||
+      Number(c.stockQuantity) < 0 ||
+      !Number.isFinite(Number(c.stockQuantity))
+    ) {
+      throw new BadRequestError(
+        `Color "${c.name}" must have a valid stock quantity`,
+      );
+    }
   }
 }
 
+// A product's aggregate stock: sum of per-color stock when colors exist,
+// otherwise the vendor-entered base stock. Keeping Product.stockQuantity in
+// sync with this lets all existing aggregate stock logic keep working.
+function resolveStock(
+  baseStock: number | undefined,
+  colors?: ProductColorRequest[],
+): number {
+  if (colors && colors.length > 0) {
+    return colors.reduce((sum, c) => sum + (Number(c.stockQuantity) || 0), 0);
+  }
+  return Number(baseStock) || 0;
+}
+
+// Create color rows for a product inside a transaction.
+async function createProductColors(
+  tx: any,
+  productId: number,
+  colors?: ProductColorRequest[],
+): Promise<void> {
+  if (!colors || colors.length === 0) return;
+  await tx.productColor.createMany({
+    data: colors.map((c, i) => ({
+      productId,
+      name: c.name.trim(),
+      hexCode: c.hexCode?.trim() || null,
+      sku: c.sku?.trim() || null,
+      imageUrl: c.imageUrl?.trim() || null,
+      stockQuantity: Number(c.stockQuantity) || 0,
+      displayOrder: c.displayOrder ?? i,
+    })),
+  });
+}
+
 export class ProductController {
-  // Create product (Admin)
+  // Load a product's owner and enforce that the current user may manage it.
+  // Superadmin bypasses; a vendor may only touch products they own.
+  private static async assertCanManageProduct(
+    productId: number,
+    req: Request,
+  ): Promise<void> {
+    const jwtPayload = (req as any).jwtPayload as JwtPayload;
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+      select: { id: true, ownerId: true },
+    });
+    if (!product) {
+      throw new NotFoundError("Product not found");
+    }
+    assertOwnership(product.ownerId, jwtPayload);
+  }
+
+  // Strict brand-ownership check for product create/update.
+  //   - superadmin: may use any brand
+  //   - vendor: the brand MUST be assigned to them (brand.ownerId === their id).
+  //     Unassigned brands and other vendors' brands are rejected — no auto-claim.
+  private static async assertBrandAssignable(
+    brandId: number | null | undefined,
+    jwtPayload: JwtPayload,
+    client: any = prisma,
+  ): Promise<void> {
+    if (jwtPayload.role === ROLES.SUPERADMIN) return; // any brand allowed
+    if (!brandId) {
+      throw new BadRequestError("A brand assigned to you is required.");
+    }
+    const brand = await client.brand.findUnique({
+      where: { id: brandId },
+      select: { ownerId: true, name: true },
+    });
+    if (!brand) {
+      throw new BadRequestError("Brand not found");
+    }
+    if (brand.ownerId !== jwtPayload.userId) {
+      throw new ForbiddenError(
+        "You can only add products under brands assigned to you.",
+      );
+    }
+  }
+
+  // Create product (Admin/Vendor)
   static async create(req: Request, res: Response, next: NextFunction) {
     try {
+      const jwtPayload = (req as any).jwtPayload as JwtPayload;
       const {
         name,
         longDescription,
@@ -72,19 +146,27 @@ export class ProductController {
         isActive,
         isFeatured,
         homepageFeature,
-        sizes,
-        skinType,
-        skinConcern,
+        colors,
         images,
         specifications,
         metaTitle,
         metaDescription,
       }: CreateProductRequest = req.body;
 
-      // Validation
-      if (!name || !price || stockQuantity === undefined || !longDescription || !sku || !brandId || !categoryId) {
+      const hasColors = Array.isArray(colors) && colors.length > 0;
+
+      // Validation. Stock may be omitted when color variants carry it instead.
+      if (
+        !name ||
+        !price ||
+        (stockQuantity === undefined && !hasColors) ||
+        !longDescription ||
+        !sku ||
+        !brandId ||
+        !categoryId
+      ) {
         throw new BadRequestError(
-          "Name, price, stock quantity, description, SKU, brand, and category are required",
+          "Name, price, stock quantity (or colors), description, SKU, brand, and category are required",
         );
       }
 
@@ -96,12 +178,22 @@ export class ProductController {
         throw new BadRequestError("Price must be greater than 0");
       }
 
-      if (stockQuantity < 0) {
+      if (stockQuantity !== undefined && stockQuantity < 0) {
         throw new BadRequestError("Stock quantity cannot be negative");
       }
 
-      if (skinType?.length) validateSkinValues(skinType, ALLOWED_SKIN_TYPES, "skinType");
-      if (skinConcern?.length) validateSkinValues(skinConcern, ALLOWED_SKIN_CONCERNS, "skinConcern");
+      validateColors(colors);
+
+      // Only the superadmin may feature products (store-front curation).
+      const isSuperAdmin = jwtPayload.role === ROLES.SUPERADMIN;
+      const featuredFlag = isSuperAdmin ? isFeatured ?? false : false;
+      const homepageFlag = isSuperAdmin ? homepageFeature ?? false : false;
+
+      // Product-level stock is the aggregate of color stock when colors exist.
+      const resolvedStock = resolveStock(stockQuantity, colors);
+
+      // Vendors may only build products under brands assigned to them.
+      await ProductController.assertBrandAssignable(brandId, jwtPayload);
 
       // Check if SKU already exists (if provided)
       if (sku) {
@@ -140,20 +232,30 @@ export class ProductController {
               price,
               originalPrice,
               costPrice,
-              stockQuantity,
+              stockQuantity: resolvedStock,
               lowStockThreshold: lowStockThreshold || 10,
               sku,
+              owner: { connect: { id: jwtPayload.userId } },
               brand: brandId ? { connect: { id: brandId } } : undefined,
               category: categoryId ? { connect: { id: categoryId } } : undefined,
               countryOfOrigin,
               metaTitle,
               metaDescription,
               isActive: isActive ?? true,
-              isFeatured: isFeatured ?? false,
-              homepageFeature: homepageFeature ?? false,
-              sizes: sizes?.length ? JSON.stringify(sizes) : null,
-              skinType: skinType?.length ? JSON.stringify(skinType) : null,
-              skinConcern: skinConcern?.length ? JSON.stringify(skinConcern) : null,
+              isFeatured: featuredFlag,
+              homepageFeature: homepageFlag,
+              colors: hasColors
+                ? {
+                    create: colors!.map((c, i) => ({
+                      name: c.name.trim(),
+                      hexCode: c.hexCode?.trim() || null,
+                      sku: c.sku?.trim() || null,
+                      imageUrl: c.imageUrl?.trim() || null,
+                      stockQuantity: Number(c.stockQuantity) || 0,
+                      displayOrder: c.displayOrder ?? i,
+                    })),
+                  }
+                : undefined,
             } as any,
           });
 
@@ -202,10 +304,11 @@ export class ProductController {
               orderBy: { displayOrder: "asc" },
             },
             specifications: true,
+            colors: { orderBy: { displayOrder: "asc" } },
           },
         });
 
-        CacheService.invalidatePatternBackground("products:*");
+        await CacheService.invalidatePattern("products:*");
         return ResponseUtil.success(
           res,
           productWithRelations,
@@ -224,20 +327,30 @@ export class ProductController {
               price,
               originalPrice,
               costPrice,
-              stockQuantity,
+              stockQuantity: resolvedStock,
               lowStockThreshold: lowStockThreshold || 10,
               sku,
+              owner: { connect: { id: jwtPayload.userId } },
               brand: brandId ? { connect: { id: brandId } } : undefined,
               category: categoryId ? { connect: { id: categoryId } } : undefined,
               countryOfOrigin,
               isActive: isActive ?? true,
-              isFeatured: isFeatured ?? false,
-              homepageFeature: homepageFeature ?? false,
+              isFeatured: featuredFlag,
+              homepageFeature: homepageFlag,
               metaDescription,
               metaTitle,
-              sizes: sizes?.length ? JSON.stringify(sizes) : null,
-              skinType: skinType?.length ? JSON.stringify(skinType) : null,
-              skinConcern: skinConcern?.length ? JSON.stringify(skinConcern) : null,
+              colors: hasColors
+                ? {
+                    create: colors!.map((c, i) => ({
+                      name: c.name.trim(),
+                      hexCode: c.hexCode?.trim() || null,
+                      sku: c.sku?.trim() || null,
+                      imageUrl: c.imageUrl?.trim() || null,
+                      stockQuantity: Number(c.stockQuantity) || 0,
+                      displayOrder: c.displayOrder ?? i,
+                    })),
+                  }
+                : undefined,
             } as any,
           });
 
@@ -286,6 +399,7 @@ export class ProductController {
               orderBy: { displayOrder: "asc" },
             },
             specifications: true,
+            colors: { orderBy: { displayOrder: "asc" } },
           },
         });
 
@@ -297,6 +411,270 @@ export class ProductController {
           201,
         );
       }
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // Bulk create products (Admin). Owner = current user. All-or-nothing: if any
+  // item is invalid nothing is created and per-item errors are returned.
+  // Images are URL-based here (file uploads aren't supported in bulk).
+  static async bulkCreate(req: Request, res: Response, next: NextFunction) {
+    try {
+      const jwtPayload = (req as any).jwtPayload as JwtPayload;
+      const isSuperAdmin = jwtPayload.role === ROLES.SUPERADMIN;
+      const items: CreateProductRequest[] = req.body.products ?? req.body.items;
+
+      if (!Array.isArray(items) || items.length === 0) {
+        throw new BadRequestError("Provide a non-empty 'products' array");
+      }
+      if (items.length > 50) {
+        throw new BadRequestError("Cannot create more than 50 products at once");
+      }
+
+      // Pre-fetch referenced brands/categories and existing SKUs/slugs.
+      const brandIds = [
+        ...new Set(items.map((p) => p?.brandId).filter((v): v is number => !!v)),
+      ];
+      const categoryIds = [
+        ...new Set(
+          items.map((p) => p?.categoryId).filter((v): v is number => !!v),
+        ),
+      ];
+      const skus = items
+        .map((p) => p?.sku)
+        .filter((v): v is string => !!v);
+
+      const [brands, categories, existingSkuRows] = await Promise.all([
+        brandIds.length
+          ? prisma.brand.findMany({
+              where: { id: { in: brandIds } },
+              select: { id: true, ownerId: true, name: true },
+            })
+          : Promise.resolve([]),
+        categoryIds.length
+          ? prisma.category.findMany({
+              where: { id: { in: categoryIds } },
+              select: { id: true },
+            })
+          : Promise.resolve([]),
+        skus.length
+          ? prisma.product.findMany({
+              where: { sku: { in: skus } },
+              select: { sku: true },
+            })
+          : Promise.resolve([]),
+      ]);
+      const validBrandIds = new Set(brands.map((b) => b.id));
+      const brandById = new Map(brands.map((b) => [b.id, b]));
+      const validCategoryIds = new Set(categories.map((c) => c.id));
+      const existingSkus = new Set(
+        existingSkuRows.map((p) => p.sku).filter(Boolean) as string[],
+      );
+
+      // Existing slugs (to keep generated slugs unique across DB + batch).
+      const existingSlugRows = await prisma.product.findMany({
+        select: { slug: true },
+      });
+      const takenSlugs = new Set(existingSlugRows.map((p) => p.slug));
+
+      const colorError = (
+        colors?: typeof items[number]["colors"],
+      ): string | null => {
+        if (!colors) return null;
+        for (const c of colors) {
+          if (!c?.name || !String(c.name).trim()) {
+            return "each color needs a name";
+          }
+          if (
+            c.stockQuantity == null ||
+            Number(c.stockQuantity) < 0 ||
+            !Number.isFinite(Number(c.stockQuantity))
+          ) {
+            return `color "${c.name}" needs a valid stock quantity`;
+          }
+        }
+        return null;
+      };
+
+      const errors: { index: number; error: string }[] = [];
+      const prepared: any[] = [];
+      const seenSkus = new Set<string>();
+
+      items.forEach((p, i) => {
+        const hasColors = Array.isArray(p?.colors) && p.colors.length > 0;
+
+        if (
+          !p?.name ||
+          !p?.price ||
+          (p.stockQuantity === undefined && !hasColors) ||
+          !p?.longDescription ||
+          !p?.sku ||
+          !p?.brandId ||
+          !p?.categoryId
+        ) {
+          errors.push({
+            index: i,
+            error:
+              "name, price, stock (or colors), longDescription, sku, brandId, categoryId are required",
+          });
+          return;
+        }
+        if (p.costPrice === undefined || p.costPrice === null) {
+          errors.push({ index: i, error: "costPrice is required" });
+          return;
+        }
+        if (p.price <= 0) {
+          errors.push({ index: i, error: "price must be greater than 0" });
+          return;
+        }
+        if (!validBrandIds.has(p.brandId)) {
+          errors.push({ index: i, error: `brand ${p.brandId} not found` });
+          return;
+        }
+        // Vendors may only use brands assigned to them (no auto-claim).
+        if (!isSuperAdmin) {
+          const brand = brandById.get(p.brandId)!;
+          if (brand.ownerId !== jwtPayload.userId) {
+            errors.push({
+              index: i,
+              error: `brand "${brand.name}" is not assigned to you`,
+            });
+            return;
+          }
+        }
+        if (!validCategoryIds.has(p.categoryId)) {
+          errors.push({ index: i, error: `category ${p.categoryId} not found` });
+          return;
+        }
+        if (existingSkus.has(p.sku)) {
+          errors.push({ index: i, error: `SKU "${p.sku}" already exists` });
+          return;
+        }
+        if (seenSkus.has(p.sku)) {
+          errors.push({
+            index: i,
+            error: `duplicate SKU "${p.sku}" within the batch`,
+          });
+          return;
+        }
+        const cErr = colorError(p.colors);
+        if (cErr) {
+          errors.push({ index: i, error: cErr });
+          return;
+        }
+
+        seenSkus.add(p.sku);
+
+        // Unique slug across DB + this batch (auto-suffix on collision).
+        const slug = SlugUtil.makeUniqueSlug(
+          SlugUtil.generateSlug(p.name),
+          [...takenSlugs],
+        );
+        takenSlugs.add(slug);
+
+        const resolvedStock = resolveStock(p.stockQuantity, p.colors);
+        const featuredFlag = isSuperAdmin ? p.isFeatured ?? false : false;
+        const homepageFlag = isSuperAdmin ? p.homepageFeature ?? false : false;
+
+        prepared.push({
+          name: p.name,
+          slug,
+          longDescription: p.longDescription,
+          price: p.price,
+          originalPrice: p.originalPrice,
+          costPrice: p.costPrice,
+          stockQuantity: resolvedStock,
+          lowStockThreshold: p.lowStockThreshold || 10,
+          sku: p.sku,
+          owner: { connect: { id: jwtPayload.userId } },
+          brand: { connect: { id: p.brandId } },
+          category: { connect: { id: p.categoryId } },
+          countryOfOrigin: p.countryOfOrigin,
+          metaTitle: p.metaTitle,
+          metaDescription: p.metaDescription,
+          isActive: p.isActive ?? true,
+          isFeatured: featuredFlag,
+          homepageFeature: homepageFlag,
+          colors: hasColors
+            ? {
+                create: p.colors!.map((c, idx) => ({
+                  name: c.name.trim(),
+                  hexCode: c.hexCode?.trim() || null,
+                  sku: c.sku?.trim() || null,
+                  imageUrl: c.imageUrl?.trim() || null,
+                  stockQuantity: Number(c.stockQuantity) || 0,
+                  displayOrder: c.displayOrder ?? idx,
+                })),
+              }
+            : undefined,
+          images:
+            p.images && p.images.length > 0
+              ? {
+                  create: p.images.map((img) => ({
+                    imageUrl: img.imageUrl,
+                    altText: img.altText || p.name,
+                    isPrimary: img.isPrimary,
+                    displayOrder: img.displayOrder,
+                  })),
+                }
+              : undefined,
+          specifications:
+            p.specifications && p.specifications.length > 0
+              ? {
+                  create: p.specifications.map((s) => ({
+                    key: s.key,
+                    value: s.value,
+                  })),
+                }
+              : undefined,
+        });
+      });
+
+      if (errors.length > 0) {
+        return ResponseUtil.badRequest(
+          res,
+          `Bulk create failed for ${errors.length} of ${items.length} item(s). No products were created.`,
+          errors,
+        );
+      }
+
+      const created = await prisma.$transaction(
+        async (tx) => {
+          const out = [];
+          for (const data of prepared) {
+            const product = await tx.product.create({
+              data,
+              include: {
+                brand: true,
+                category: true,
+                images: { orderBy: { displayOrder: "asc" } },
+                specifications: true,
+                colors: { orderBy: { displayOrder: "asc" } },
+              },
+            });
+            out.push(product);
+          }
+          return out;
+        },
+        // Creating up to 50 products (with nested colors/images/specs) over a
+        // remote pooled connection can exceed the 5s default interactive-tx limit.
+        { timeout: 60000, maxWait: 15000 },
+      );
+
+      const products = created.map((p) =>
+        parseProductArrays(
+          ProductController.transformProductResponse(p, true),
+        ),
+      );
+
+      await CacheService.invalidatePattern("products:*");
+      return ResponseUtil.success(
+        res,
+        { count: products.length, products },
+        `${products.length} product(s) created successfully`,
+        201,
+      );
     } catch (error) {
       next(error);
     }
@@ -323,6 +701,12 @@ export class ProductController {
         throw new NotFoundError("Product not found");
       }
 
+      // Vendors may only update their own products (superadmin bypasses)
+      assertOwnership(
+        existingProduct.ownerId,
+        (req as any).jwtPayload as JwtPayload,
+      );
+
       // Extract fields from updateData
       const {
         name,
@@ -339,17 +723,31 @@ export class ProductController {
         isActive,
         isFeatured,
         homepageFeature,
-        sizes,
-        skinType,
-        skinConcern,
+        colors,
         images,
         specifications,
         metaTitle,
         metaDescription,
       } = updateData;
 
-      if (skinType?.length) validateSkinValues(skinType, ALLOWED_SKIN_TYPES, "skinType");
-      if (skinConcern?.length) validateSkinValues(skinConcern, ALLOWED_SKIN_CONCERNS, "skinConcern");
+      validateColors(colors);
+
+      // colors provided (even empty array) => replace variants; sync product stock.
+      const colorsProvided = colors !== undefined;
+      const hasColors = Array.isArray(colors) && colors.length > 0;
+      const resolvedStock = hasColors
+        ? resolveStock(stockQuantity, colors)
+        : stockQuantity;
+
+      // Only the superadmin may change featured flags (store-front curation).
+      const jwtPayload = (req as any).jwtPayload as JwtPayload;
+      const isSuperAdmin = jwtPayload.role === ROLES.SUPERADMIN;
+
+      // If the brand is changing, a vendor may only move it to a brand assigned
+      // to them (superadmin may use any).
+      if (brandId !== undefined && brandId !== existingProduct.brandId) {
+        await ProductController.assertBrandAssignable(brandId, jwtPayload);
+      }
 
       // Check if SKU is being changed and if it's already in use
       if (sku && sku !== existingProduct.sku) {
@@ -395,7 +793,7 @@ export class ProductController {
             price,
             originalPrice,
             costPrice,
-            stockQuantity,
+            stockQuantity: resolvedStock,
             lowStockThreshold,
             sku,
             brand: brandId !== undefined
@@ -406,13 +804,11 @@ export class ProductController {
               : undefined,
             countryOfOrigin,
             isActive,
-            isFeatured,
-            homepageFeature,
+            // Vendors cannot toggle featured flags — leave unchanged for them.
+            isFeatured: isSuperAdmin ? isFeatured : undefined,
+            homepageFeature: isSuperAdmin ? homepageFeature : undefined,
             metaTitle,
             metaDescription,
-            sizes: sizes !== undefined ? (sizes?.length ? JSON.stringify(sizes) : null) : undefined,
-            skinType: skinType !== undefined ? (skinType?.length ? JSON.stringify(skinType) : null) : undefined,
-            skinConcern: skinConcern !== undefined ? (skinConcern?.length ? JSON.stringify(skinConcern) : null) : undefined,
           } as any,
         });
 
@@ -452,6 +848,12 @@ export class ProductController {
           }
         }
 
+        // 4. Replace color variants if provided (empty array clears them)
+        if (colorsProvided) {
+          await tx.productColor.deleteMany({ where: { productId } });
+          await createProductColors(tx, productId, colors);
+        }
+
         return updatedProduct;
       });
 
@@ -470,7 +872,7 @@ export class ProductController {
       }
 
       // Fetch updated product with parallel queries (same pattern as getBySlug)
-      const [updatedProduct, allCategories, updatedImages, updatedSpecs] =
+      const [updatedProduct, allCategories, updatedImages, updatedSpecs, updatedColors] =
         await Promise.all([
           prisma.product.findUnique({ where: { id: product.id }, include: { brand: true } }),
           prisma.category.findMany({
@@ -483,6 +885,10 @@ export class ProductController {
           prisma.productSpecification.findMany({
             where: { productId: product.id },
           }),
+          prisma.productColor.findMany({
+            where: { productId: product.id },
+            orderBy: { displayOrder: "asc" },
+          }),
         ]);
 
       const catMap = new Map(allCategories.map((c) => [c.id, c]));
@@ -490,10 +896,10 @@ export class ProductController {
         updatedProduct!.categoryId,
         catMap,
       );
-      const fullProduct = { ...updatedProduct, category, images: updatedImages, specifications: updatedSpecs };
+      const fullProduct = { ...updatedProduct, category, images: updatedImages, specifications: updatedSpecs, colors: updatedColors };
       const response = ProductController.transformProductResponse(fullProduct, true);
 
-      CacheService.invalidatePatternBackground("products:*");
+      await CacheService.invalidatePattern("products:*");
       return ResponseUtil.success(res, response, "Product updated successfully");
     } catch (error) {
       next(error);
@@ -559,8 +965,6 @@ export class ProductController {
         maxPrice,
         inStock,
         isFeatured,
-        skinType,
-        skinConcern,
         sortBy = "createdAt",
         sortOrder = "desc",
       } = req.query;
@@ -573,9 +977,10 @@ export class ProductController {
       const limitNum = parseInt(limit as string);
       const skip = (pageNum - 1) * limitNum;
 
-      // Build where clause
+      // Build where clause. Public storefront only ever shows active products
+      // (deactivated products — e.g. from a deactivated vendor — stay hidden).
       const where: any = {
-        // isActive: true,
+        isActive: true,
       };
 
       if (search) {
@@ -643,36 +1048,6 @@ export class ProductController {
         where.homepageFeature = true;
       }
 
-      // Filter by skin type / skin concern.
-      // These are stored as JSON strings in TEXT columns (e.g. ["Oily"]),
-      // so we match on the quoted value to avoid partial hits (e.g. "Dry" vs "Dryness").
-      // Accepts a single value, comma-separated values, or repeated params;
-      // multiple values within a field are OR-ed (product matches any).
-      const parseMulti = (val: unknown): string[] =>
-        (Array.isArray(val) ? val : typeof val === "string" ? val.split(",") : [])
-          .map((v) => String(v).trim())
-          .filter(Boolean);
-
-      const skinTypeValues = parseMulti(skinType);
-      if (skinTypeValues.length > 0) {
-        where.AND = where.AND || [];
-        where.AND.push({
-          OR: skinTypeValues.map((v) => ({
-            skinType: { contains: `"${v}"`, mode: "insensitive" },
-          })),
-        });
-      }
-
-      const skinConcernValues = parseMulti(skinConcern);
-      if (skinConcernValues.length > 0) {
-        where.AND = where.AND || [];
-        where.AND.push({
-          OR: skinConcernValues.map((v) => ({
-            skinConcern: { contains: `"${v}"`, mode: "insensitive" },
-          })),
-        });
-      }
-
       // Build orderBy
       const orderBy: any = {};
       orderBy[sortBy as string] = sortOrder;
@@ -688,6 +1063,7 @@ export class ProductController {
               where: { isPrimary: true },
               take: 1,
             },
+            colors: { orderBy: { displayOrder: "asc" } },
           },
           skip,
           take: limitNum,
@@ -720,6 +1096,101 @@ export class ProductController {
     }
   }
 
+  // Get products for the admin panel, scoped to the caller (Admin/Vendor).
+  // A vendor sees only products they own; the superadmin sees all (optionally
+  // filtered by ?ownerId=). Includes costPrice and is never cached.
+  static async getAdminProducts(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) {
+    try {
+      const jwtPayload = (req as any).jwtPayload as JwtPayload;
+      const {
+        page = 1,
+        limit = 20,
+        search,
+        isActive,
+        ownerId,
+        sortBy = "createdAt",
+        sortOrder = "desc",
+      } = req.query;
+
+      const pageNum = parseInt(page as string);
+      const limitNum = parseInt(limit as string);
+      const skip = (pageNum - 1) * limitNum;
+
+      const where: any = {};
+
+      // Ownership scoping: vendors are locked to their own products.
+      if (jwtPayload.role === ROLES.SUPERADMIN) {
+        if (ownerId) where.ownerId = parseInt(ownerId as string);
+      } else {
+        where.ownerId = jwtPayload.userId;
+      }
+
+      if (search) {
+        where.OR = [
+          { name: { contains: search as string, mode: "insensitive" } },
+          { sku: { contains: search as string, mode: "insensitive" } },
+        ];
+      }
+
+      if (isActive !== undefined) {
+        where.isActive = isActive === "true";
+      }
+
+      if (req.query.isFeatured !== undefined) {
+        where.isFeatured = req.query.isFeatured === "true";
+      }
+
+      if (req.query.homepageFeature !== undefined) {
+        where.homepageFeature = req.query.homepageFeature === "true";
+      }
+
+      const orderBy: any = {};
+      orderBy[sortBy as string] = sortOrder;
+
+      const [products, total] = await Promise.all([
+        prisma.product.findMany({
+          where,
+          include: {
+            brand: true,
+            category: true,
+            images: { where: { isPrimary: true }, take: 1 },
+            colors: { orderBy: { displayOrder: "asc" } },
+          },
+          skip,
+          take: limitNum,
+          orderBy,
+        }),
+        prisma.product.count({ where }),
+      ]);
+
+      const data = products.map((product) =>
+        parseProductArrays(
+          ProductController.transformProductResponse(product, true),
+        ),
+      );
+
+      return ResponseUtil.success(
+        res,
+        {
+          data,
+          pagination: {
+            page: pageNum,
+            limit: limitNum,
+            total,
+            totalPages: Math.ceil(total / limitNum),
+          },
+        },
+        "Products retrieved successfully",
+      );
+    } catch (error) {
+      next(error);
+    }
+  }
+
   // Get products with discounts (originalPrice > price)
   static getDiscountedProducts = async (req: Request, res: Response) => {
     try {
@@ -746,6 +1217,7 @@ export class ProductController {
         include: {
           brand: true,
           category: true,
+          colors: { orderBy: { displayOrder: "asc" } },
           images: {
             orderBy: {
               displayOrder: "asc",
@@ -782,6 +1254,73 @@ export class ProductController {
     }
   };
 
+  // Compare up to 3 products side by side (Public).
+  // Usage: GET /products/compare?ids=1,2,3
+  // Returns the products (active only, in the requested order) plus a unified,
+  // ordered list of spec keys so the client can align rows across products.
+  static async compare(req: Request, res: Response, next: NextFunction) {
+    try {
+      const raw = req.query.ids;
+      const ids = (Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(",") : [])
+        .map((v) => parseInt(String(v).trim(), 10))
+        .filter((n) => Number.isInteger(n) && n > 0);
+
+      const uniqueIds = [...new Set(ids)];
+
+      if (uniqueIds.length < 2) {
+        throw new BadRequestError(
+          "Provide at least 2 product ids to compare (e.g. ?ids=1,2).",
+        );
+      }
+      if (uniqueIds.length > 3) {
+        throw new BadRequestError(
+          "You can compare a maximum of 3 products at a time.",
+        );
+      }
+
+      const products = await prisma.product.findMany({
+        where: { id: { in: uniqueIds }, isActive: true },
+        include: {
+          brand: true,
+          category: true,
+          specifications: true,
+          colors: { orderBy: { displayOrder: "asc" } },
+          images: { where: { isPrimary: true }, take: 1 },
+        },
+      });
+
+      // Preserve the caller's order and drop any missing/inactive ids.
+      const byId = new Map(products.map((p) => [p.id, p]));
+      const ordered = uniqueIds
+        .map((id) => byId.get(id))
+        .filter((p): p is (typeof products)[number] => Boolean(p));
+
+      if (ordered.length === 0) {
+        throw new NotFoundError("No matching products found to compare.");
+      }
+
+      const transformed = ordered.map((p) =>
+        ProductController.transformProductResponse(p, false),
+      );
+
+      // Union of spec keys in first-seen order — lets the UI render aligned rows.
+      const specKeys: string[] = [];
+      for (const p of transformed) {
+        for (const s of p.specifications ?? []) {
+          if (!specKeys.includes(s.key)) specKeys.push(s.key);
+        }
+      }
+
+      return ResponseUtil.success(
+        res,
+        { products: transformed, specKeys },
+        "Products retrieved for comparison",
+      );
+    } catch (error) {
+      next(error);
+    }
+  }
+
   // Resolve a category with its parent chain using a pre-fetched category map
   private static buildCategoryWithParents(
     categoryId: number | null,
@@ -806,7 +1345,7 @@ export class ProductController {
       if (cached) return ResponseUtil.success(res, cached, "Product retrieved successfully");
 
       // Run all 4 queries in parallel — cuts 6 sequential RTTs down to 1 parallel group
-      const [product, allCategories, images, specifications] = await Promise.all([
+      const [product, allCategories, images, specifications, colors] = await Promise.all([
         prisma.product.findUnique({ where: { slug }, include: { brand: true } }),
         prisma.category.findMany({
           select: { id: true, name: true, slug: true, parentId: true, level: true, description: true, isActive: true },
@@ -817,6 +1356,10 @@ export class ProductController {
         }),
         prisma.productSpecification.findMany({
           where: { product: { slug } },
+        }),
+        prisma.productColor.findMany({
+          where: { product: { slug } },
+          orderBy: { displayOrder: "asc" },
         }),
       ]);
 
@@ -831,7 +1374,7 @@ export class ProductController {
       const catMap = new Map(allCategories.map((c) => [c.id, c]));
       const category = ProductController.buildCategoryWithParents(product.categoryId, catMap);
 
-      const fullProduct = { ...product, category, images, specifications };
+      const fullProduct = { ...product, category, images, specifications, colors };
       const response = ProductController.transformProductResponse(fullProduct, false);
 
       CacheService.setBackground(cacheKey, response, TTL.PRODUCT_SLUG);
@@ -847,8 +1390,8 @@ export class ProductController {
       const { id } = req.params;
       const productId = parseInt(id);
 
-      // Run all 4 queries in parallel
-      const [product, allCategories, images, specifications] = await Promise.all([
+      // Run all queries in parallel
+      const [product, allCategories, images, specifications, colors] = await Promise.all([
         prisma.product.findUnique({ where: { id: productId }, include: { brand: true } }),
         prisma.category.findMany({
           select: { id: true, name: true, slug: true, parentId: true, level: true, description: true, isActive: true },
@@ -860,16 +1403,23 @@ export class ProductController {
         prisma.productSpecification.findMany({
           where: { productId },
         }),
+        prisma.productColor.findMany({
+          where: { productId },
+          orderBy: { displayOrder: "asc" },
+        }),
       ]);
 
       if (!product) {
         throw new NotFoundError("Product not found");
       }
 
+      // Vendors may only view their own product's admin detail (superadmin bypasses)
+      assertOwnership(product.ownerId, (req as any).jwtPayload as JwtPayload);
+
       const catMap = new Map(allCategories.map((c) => [c.id, c]));
       const category = ProductController.buildCategoryWithParents(product.categoryId, catMap);
 
-      const fullProduct = { ...product, category, images, specifications };
+      const fullProduct = { ...product, category, images, specifications, colors };
       const response = ProductController.transformProductResponse(fullProduct, true);
 
       return ResponseUtil.success(
@@ -1003,28 +1553,54 @@ export class ProductController {
       const { id } = req.params;
       const productId = parseInt(id);
 
-      // Fetch product with images so we can clean up storage
+      // Fetch product with images (for storage cleanup) and its order-item count
       const product = await prisma.product.findUnique({
         where: { id: productId },
-        include: { images: true },
+        include: {
+          images: true,
+          _count: { select: { orderItems: true } },
+        },
       });
 
       if (!product) {
         throw new NotFoundError("Product not found");
       }
 
-      // Delete all images from Supabase Storage before removing DB record
+      // Vendors may only delete their own products (superadmin bypasses)
+      assertOwnership(product.ownerId, (req as any).jwtPayload as JwtPayload);
+
+      // A product referenced by past orders can't be hard-deleted without losing
+      // order history. Archive it instead (deactivate + hide from the store).
+      if (product._count.orderItems > 0) {
+        await prisma.product.update({
+          where: { id: productId },
+          data: { isActive: false },
+        });
+
+        await CacheService.invalidatePattern("products:*");
+        return ResponseUtil.success(
+          res,
+          { archived: true },
+          "Product has existing orders, so it was archived (deactivated) instead of deleted to preserve order history.",
+        );
+      }
+
+      // No orders reference it — safe to hard-delete. Remove storage images first.
       if (product.images.length > 0) {
         await StorageService.deleteImages(
           product.images.map((img) => img.imageUrl),
         );
       }
 
-      // Delete product — cascade removes ProductImage rows from DB
+      // Delete product — cascade removes images, colors, cart/wishlist rows
       await prisma.product.delete({ where: { id: productId } });
 
-      CacheService.invalidatePatternBackground("products:*");
-      return ResponseUtil.success(res, null, "Product deleted successfully");
+      await CacheService.invalidatePattern("products:*");
+      return ResponseUtil.success(
+        res,
+        { archived: false },
+        "Product deleted successfully",
+      );
     } catch (error) {
       next(error);
     }
@@ -1035,13 +1611,11 @@ export class ProductController {
     product: any,
     includeCostPrice: boolean = false,
   ) {
-    // Convert JSON strings back to arrays
-    const sizes = JsonUtil.jsonToArray(product.sizes);
+    // Convert JSON string back to array
     const badges = JsonUtil.jsonToArray(product.badges);
-    const skinType = JsonUtil.jsonToArray(product.skinType);
-    const skinConcern = JsonUtil.jsonToArray(product.skinConcern);
 
-    // Calculate stock status
+    // Calculate stock status (product.stockQuantity is kept in sync as the
+    // aggregate of any color-variant stock, so this stays correct either way).
     let stockStatus: "in_stock" | "low_stock" | "out_of_stock" = "in_stock";
     if (product.stockQuantity === 0) {
       stockStatus = "out_of_stock";
@@ -1059,10 +1633,7 @@ export class ProductController {
 
     const response: any = {
       ...product,
-      sizes,
       badges,
-      skinType,
-      skinConcern,
       stockStatus,
       discountPercentage,
     };
@@ -1096,6 +1667,8 @@ export class ProductController {
       if (!product) {
         throw new NotFoundError("Product not found");
       }
+
+      assertOwnership(product.ownerId, (req as any).jwtPayload as JwtPayload);
 
       // Validate image data
       for (const image of images) {
@@ -1183,6 +1756,8 @@ export class ProductController {
         throw new NotFoundError("Image not found");
       }
 
+      await ProductController.assertCanManageProduct(productId, req);
+
       // If setting as primary, unset other primary images
       if (isPrimary === true) {
         await prisma.productImage.updateMany({
@@ -1227,6 +1802,8 @@ export class ProductController {
         throw new NotFoundError("Image not found");
       }
 
+      await ProductController.assertCanManageProduct(productId, req);
+
       // Delete from Supabase Storage, then remove DB record
       await StorageService.deleteImage(image.imageUrl);
       await prisma.productImage.delete({ where: { id: imageIdInt } });
@@ -1258,6 +1835,8 @@ export class ProductController {
       if (!image || image.productId !== productId) {
         throw new NotFoundError("Image not found");
       }
+
+      await ProductController.assertCanManageProduct(productId, req);
 
       // Unset all primary images for this product
       await prisma.productImage.updateMany({
@@ -1300,6 +1879,8 @@ export class ProductController {
         throw new NotFoundError("Product not found");
       }
 
+      assertOwnership(product.ownerId, (req as any).jwtPayload as JwtPayload);
+
       // Upload to Supabase Storage
       const imageUrl = await StorageService.uploadImage(file, "products");
 
@@ -1327,7 +1908,6 @@ export class ProductController {
   // Reorder images (Admin only)
   static async reorderImages(req: Request, res: Response, next: NextFunction) {
     try {
-      console.log("here");
       const { id } = req.params;
       const {
         imageOrders,
@@ -1349,6 +1929,8 @@ export class ProductController {
       if (!product) {
         throw new NotFoundError("Product not found");
       }
+
+      assertOwnership(product.ownerId, (req as any).jwtPayload as JwtPayload);
 
       // Update all image orders
       await Promise.all(
@@ -1409,6 +1991,8 @@ export class ProductController {
       if (!product) {
         throw new NotFoundError("Product not found");
       }
+
+      assertOwnership(product.ownerId, (req as any).jwtPayload as JwtPayload);
 
       // Validate specification data
       for (const spec of specifications) {
@@ -1499,6 +2083,8 @@ export class ProductController {
         throw new NotFoundError("Specification not found");
       }
 
+      await ProductController.assertCanManageProduct(productId, req);
+
       // Update specification
       const specification = await prisma.productSpecification.update({
         where: { id: specIdInt },
@@ -1539,6 +2125,8 @@ export class ProductController {
       if (!specification || specification.productId !== productId) {
         throw new NotFoundError("Specification not found");
       }
+
+      await ProductController.assertCanManageProduct(productId, req);
 
       // Delete specification
       await prisma.productSpecification.delete({
@@ -1582,6 +2170,8 @@ export class ProductController {
       if (!product) {
         throw new NotFoundError("Product not found");
       }
+
+      assertOwnership(product.ownerId, (req as any).jwtPayload as JwtPayload);
 
       // Delete all existing specifications
       await prisma.productSpecification.deleteMany({

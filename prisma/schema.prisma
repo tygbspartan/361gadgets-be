@@ -3,8 +3,8 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
 }
 
@@ -20,13 +20,27 @@ model User {
   lastName  String? @map("last_name")
   phone     String?
 
-  role String @default("customer")
+  // Vendor (admin) profile. A vendor is a company, so companyName is its display
+  // name and logoUrl its avatar/logo. Null for customers.
+  companyName String? @map("company_name")
+  logoUrl     String? @map("logo_url")
+
+  role String @default("customer") // "customer" | "admin" (vendor) | "superadmin"
+
+  // Account moderation — superadmin can deactivate a vendor without deleting them
+  isActive Boolean @default(true) @map("is_active")
+
+  // Which superadmin created this admin account (null for self-registered customers / seeded superadmin)
+  createdById Int? @map("created_by_id")
 
   isEmailVerified        Boolean @default(false) @map("is_email_verified")
   emailVerificationToken String? @unique @map("email_verification_token")
 
   passwordResetToken  String?   @unique @map("password_reset_token")
   passwordResetExpiry DateTime? @map("password_reset_expiry")
+
+  // Bumped on password change/reset and deactivation to invalidate existing JWTs.
+  tokenVersion Int @default(0) @map("token_version")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -36,6 +50,17 @@ model User {
   orders             Order[]
   reviews            Review[]
   reviewHelpfulVotes ReviewHelpful[]
+  addresses          Address[]
+
+  // Marketplace ownership (vendor = admin)
+  ownedProducts  Product[]  @relation("ProductOwner")
+  ownedDiscounts Discount[] @relation("DiscountOwner")
+  ownedBrands    Brand[]    @relation("BrandOwner")
+  payouts        Payout[]   @relation("VendorPayouts")
+
+  // Self-relation: superadmin -> admins they created
+  createdBy     User?  @relation("AdminCreator", fields: [createdById], references: [id])
+  createdAdmins User[] @relation("AdminCreator")
 
   @@map("users")
 }
@@ -92,13 +117,18 @@ model Category {
 // ==================== BRANDS ====================
 
 model Brand {
-  id              Int     @id @default(autoincrement())
-  name            String // e.g., "Pax Moly"
-  slug            String  @unique // e.g., "pax-moly"
-  description     String?
-  logoUrl  String? @map("logo_url")
-  isActive Boolean @default(true) @map("is_active")
-  isFeatured      Boolean @default(false) @map("is_featured")
+  id          Int     @id @default(autoincrement())
+  name        String // e.g., "Pax Moly"
+  slug        String  @unique // e.g., "pax-moly"
+  description String?
+  logoUrl     String? @map("logo_url")
+  isActive    Boolean @default(true) @map("is_active")
+  isFeatured  Boolean @default(false) @map("is_featured")
+
+  // Exclusive vendor ownership. When set, only this vendor (and the superadmin)
+  // may create products under this brand. Null = unclaimed; the first vendor to
+  // use it claims it. Assigned/reassigned by the superadmin.
+  ownerId Int? @map("owner_id")
 
   // SEO
   metaTitle       String? @map("meta_title")
@@ -107,6 +137,7 @@ model Brand {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  owner    User?     @relation("BrandOwner", fields: [ownerId], references: [id])
   products Product[]
 
   @@map("brands")
@@ -119,6 +150,9 @@ model Product {
   name String // e.g., "Pax Moly KOREA Real Snail Facial Sheet Mask"
   slug String  @unique // e.g., "pax-moly-korea-real-snail-facial-sheet-mask"
   sku  String? @unique
+
+  // Ownership — the vendor (admin) who owns this product. Null = legacy/platform-owned (managed by superadmin)
+  ownerId Int? @map("owner_id")
 
   // Categorization
   brandId    Int? @map("brand_id")
@@ -135,14 +169,11 @@ model Product {
   // Product Details
   countryOfOrigin String? @map("country_of_origin")
 
-  // Sizes (e.g., ["S", "M", "L", "XL"] or ["250ml", "500ml"])
-  sizes String? @db.Text // JSON array; null means no size selection required
-
-  // Skin attributes (JSON arrays of allowed enum values)
-  skinType    String? @db.Text @map("skin_type")    // e.g. ["Normal","Dry"]
-  skinConcern String? @db.Text @map("skin_concern") // e.g. ["Acne & Breakouts","Dullness & Brightening"]
-
   // Stock Management
+  // For products WITHOUT colors, stockQuantity is the vendor-entered stock.
+  // For products WITH colors, the controller keeps stockQuantity in sync as the
+  // SUM of the per-color stock (ProductColor.stockQuantity), so all existing
+  // aggregate stock logic (filters, stock status, dashboards) keeps working.
   stockQuantity     Int @default(0) @map("stock_quantity")
   lowStockThreshold Int @default(5) @map("low_stock_threshold")
 
@@ -162,17 +193,47 @@ model Product {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
+  owner          User?                  @relation("ProductOwner", fields: [ownerId], references: [id])
   brand          Brand?                 @relation(fields: [brandId], references: [id])
   category       Category?              @relation(fields: [categoryId], references: [id])
   images         ProductImage[]
   specifications ProductSpecification[]
+  colors         ProductColor[]
   discounts      ProductDiscount[]
   cartItems      CartItem[]
   wishlistItems  WishlistItem[]
   orderItems     OrderItem[]
   reviews        Review[]
 
+  // Hot filter/sort paths for the catalog and vendor scoping.
+  @@index([categoryId])
+  @@index([brandId])
+  @@index([ownerId])
+  @@index([isActive])
   @@map("products")
+}
+
+// ==================== PRODUCT COLORS (variants) ====================
+// Optional per-product color variants, each with its own stock. A product with
+// no rows here is a simple single-stock product (uses Product.stockQuantity).
+model ProductColor {
+  id            Int     @id @default(autoincrement())
+  productId     Int     @map("product_id")
+  name          String // e.g. "Space Black", "Silver"
+  hexCode       String? @map("hex_code") // optional swatch, e.g. "#1a1a1a"
+  sku           String? // optional per-color SKU
+  imageUrl      String? @map("image_url") // optional per-color image
+  stockQuantity Int     @default(0) @map("stock_quantity")
+  displayOrder  Int     @default(0) @map("display_order")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  product    Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  cartItems  CartItem[]
+  orderItems OrderItem[]
+
+  @@map("product_colors")
 }
 
 // ==================== PRODUCT IMAGES ====================
@@ -223,12 +284,19 @@ model Discount {
   isActive          Boolean  @default(true) @map("is_active")
   usageLimit        Int?     @map("usage_limit")
   usedCount         Int      @default(0) @map("used_count")
+  // When true, each customer may redeem this code only once.
+  oncePerUser       Boolean  @default(false) @map("once_per_user")
+
+  // Ownership — the vendor (admin) who created this promo. Null = legacy/platform-wide (superadmin)
+  ownerId Int? @map("owner_id")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  products ProductDiscount[]
-  orders   Order[]
+  owner       User?                @relation("DiscountOwner", fields: [ownerId], references: [id])
+  products    ProductDiscount[]
+  orders      Order[]
+  redemptions DiscountRedemption[]
 
   @@map("discounts")
 }
@@ -252,14 +320,16 @@ model CartItem {
   id        Int      @id @default(autoincrement())
   userId    Int      @map("user_id")
   productId Int      @map("product_id")
+  colorId   Int?     @map("color_id") // Selected color variant (null if product has no colors)
   quantity  Int      @default(1)
-  size      String?  // Selected size (null if product has no sizes)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  color   ProductColor? @relation(fields: [colorId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
   @@map("cart_items")
 }
 
@@ -323,12 +393,26 @@ model Order {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  user            User?       @relation(fields: [userId], references: [id])
+  user            User?                @relation(fields: [userId], references: [id])
   items           OrderItem[]
-  appliedDiscount Discount?   @relation(fields: [discountId], references: [id], onDelete: SetNull) //
+  appliedDiscount Discount?            @relation(fields: [discountId], references: [id], onDelete: SetNull) //
   reviews         Review[]
+  statusHistory   OrderStatusHistory[]
+  refunds         Refund[]
 
+  @@index([userId])
   @@map("orders")
+}
+
+// Dedupes checkout requests carrying the same Idempotency-Key header so a
+// retry (or double-submit) returns the original order instead of creating a new one.
+model IdempotencyKey {
+  key       String   @id
+  orderId   Int?     @map("order_id")
+  userId    Int?     @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("idempotency_keys")
 }
 
 model OrderItem {
@@ -340,7 +424,8 @@ model OrderItem {
   productName  String  @map("product_name")
   productSku   String? @map("product_sku")
   productImage String? @map("product_image") // Primary image URL
-  productSize  String? @map("product_size")  // Selected size at time of order
+  colorName    String? @map("color_name") // Selected color name at time of order
+  colorId      Int?    @map("color_id") // Selected color variant (null if none)
 
   // Pricing
   price    Decimal @db.Decimal(10, 2) // Price at time of order
@@ -350,8 +435,9 @@ model OrderItem {
   createdAt DateTime @default(now()) @map("created_at")
 
   // Relations
-  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id])
+  order   Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product       @relation(fields: [productId], references: [id])
+  color   ProductColor? @relation(fields: [colorId], references: [id], onDelete: SetNull)
 
   @@map("order_items")
 }
@@ -373,8 +459,8 @@ model Review {
   images String? @db.Text // JSON array of image URLs
 
   // Review type
-  reviewType     String  @default("initial") @map("review_type") // "initial" or "followup"
-  parentReviewId Int?    @unique @map("parent_review_id")
+  reviewType     String @default("initial") @map("review_type") // "initial" or "followup"
+  parentReviewId Int?   @unique @map("parent_review_id")
 
   // Moderation
   isVerifiedPurchase Boolean @default(false) @map("is_verified_purchase")
@@ -411,4 +497,129 @@ model ReviewHelpful {
 
   @@unique([reviewId, userId]) // One vote per user per review
   @@map("review_helpful")
+}
+
+// ==================== PHASE 2: DOMAIN MODELS ====================
+
+// Saved shipping addresses for a customer. Orders still snapshot the address
+// at checkout (fields on Order), so editing/deleting an address never mutates
+// past orders.
+model Address {
+  id           Int     @id @default(autoincrement())
+  userId       Int     @map("user_id")
+  fullName     String  @map("full_name")
+  phone        String
+  addressLine1 String  @map("address_line1")
+  addressLine2 String? @map("address_line2")
+  landmark     String?
+  city         String
+  province     String?
+  postalCode   String  @map("postal_code")
+  country      String  @default("Nepal")
+  isDefault    Boolean @default(false) @map("is_default")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("addresses")
+}
+
+// Single-row platform configuration (id is always 1). Editable by the
+// superadmin so commission/shipping/support don't need a redeploy. No tax.
+model PlatformSettings {
+  id                    Int      @id @default(1)
+  commissionRate        Decimal  @default(0.10) @map("commission_rate") @db.Decimal(5, 4)
+  currency              String   @default("NPR")
+  supportEmail          String?  @map("support_email")
+  shippingInsideValley  Decimal  @default(100) @map("shipping_inside_valley") @db.Decimal(10, 2)
+  shippingOutsideValley Decimal  @default(200) @map("shipping_outside_valley") @db.Decimal(10, 2)
+  freeShippingThreshold Decimal  @default(10000) @map("free_shipping_threshold") @db.Decimal(10, 2)
+  featureFlags          String?  @map("feature_flags") @db.Text // JSON object of flags
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  @@map("platform_settings")
+}
+
+// A recorded payout to a vendor for a period. Makes earnings reconstructable
+// and auditable after the fact.
+model Payout {
+  id          Int       @id @default(autoincrement())
+  vendorId    Int       @map("vendor_id")
+  periodStart DateTime  @map("period_start")
+  periodEnd   DateTime  @map("period_end")
+  gross       Decimal   @db.Decimal(12, 2)
+  commission  Decimal   @db.Decimal(12, 2)
+  net         Decimal   @db.Decimal(12, 2)
+  status      String    @default("pending") // pending | paid
+  reference   String? // bank/txn reference when marked paid
+  paidAt      DateTime? @map("paid_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  vendor User @relation("VendorPayouts", fields: [vendorId], references: [id])
+
+  @@index([vendorId])
+  @@map("payouts")
+}
+
+// Immutable trail of order status transitions.
+model OrderStatusHistory {
+  id          Int      @id @default(autoincrement())
+  orderId     Int      @map("order_id")
+  fromStatus  String?  @map("from_status")
+  toStatus    String   @map("to_status")
+  changedById Int?     @map("changed_by_id") // null = system/customer
+  note        String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("order_status_history")
+}
+
+// Manual refund record (fake-product cases only; no payment provider wired).
+model Refund {
+  id          Int      @id @default(autoincrement())
+  orderId     Int      @map("order_id")
+  amount      Decimal  @db.Decimal(12, 2)
+  reason      String
+  status      String   @default("completed")
+  createdById Int?     @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("refunds")
+}
+
+// Generic audit trail for sensitive privileged actions.
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  actorId   Int?     @map("actor_id")
+  action    String // e.g. "vendor.deactivate", "brand.assign", "payout.create"
+  entity    String // e.g. "user", "brand", "payout"
+  entityId  Int?     @map("entity_id")
+  meta      String?  @db.Text // JSON details
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([entity, entityId])
+  @@map("audit_logs")
+}
+
+// One row per (discount, user) redemption — enforces once-per-user codes.
+model DiscountRedemption {
+  id         Int      @id @default(autoincrement())
+  discountId Int      @map("discount_id")
+  userId     Int      @map("user_id")
+  orderId    Int?     @map("order_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  discount Discount @relation(fields: [discountId], references: [id], onDelete: Cascade)
+
+  @@unique([discountId, userId])
+  @@map("discount_redemptions")
 }

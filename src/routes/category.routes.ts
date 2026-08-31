@@ -1,6 +1,10 @@
 import { Router } from "express";
 import { CategoryController } from "../controllers/category.controller";
-import { authenticate, isAdmin } from "../middleware/auth.middleware";
+import {
+  authenticate,
+  isAdmin,
+  isSuperadmin,
+} from "../middleware/auth.middleware";
 
 const router = Router();
 
@@ -9,10 +13,13 @@ router.get("/", CategoryController.getAll);
 router.get("/tree", CategoryController.getTree);
 router.get("/slug/:slug", CategoryController.getBySlug);
 
-// Admin routes (authentication + admin required)
-router.post("/", authenticate, isAdmin, CategoryController.create);
+// Read (any privileged user — vendors need to read categories to attach to products)
 router.get("/:id", authenticate, isAdmin, CategoryController.getById);
-router.put("/:id", authenticate, isAdmin, CategoryController.update);
-router.delete("/:id", authenticate, isAdmin, CategoryController.delete);
+
+// Mutations — superadmin only (vendors request new categories via /catalog-requests)
+router.post("/bulk", authenticate, isSuperadmin, CategoryController.bulkCreate);
+router.post("/", authenticate, isSuperadmin, CategoryController.create);
+router.put("/:id", authenticate, isSuperadmin, CategoryController.update);
+router.delete("/:id", authenticate, isSuperadmin, CategoryController.delete);
 
 export default router;
