@@ -5,7 +5,7 @@ import { Request, Response, NextFunction } from "express";
 import { BadRequestError } from "../utils/customError.util";
 
 const ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
-const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
+const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2 MB
 const MAX_FILES = 1; // every upload route uses upload.single(...)
 const MAX_DIMENSION = 2000; // px — cap the longest edge
 

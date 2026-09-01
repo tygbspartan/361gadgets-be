@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import path from 'path';
 
 dotenv.config();
 
@@ -37,6 +38,11 @@ interface EnvConfig {
   // Token Expiry
   verificationTokenExpiry: string;
   passwordResetTokenExpiry: string;
+
+  // Storage. The driver is chosen by NODE_ENV in storage.service.ts:
+  // production → local disk (served from /uploads), otherwise → Supabase Storage.
+  uploadDir: string; // root dir for local-disk uploads
+  publicBaseUrl: string; // public origin that serves local uploads (no trailing slash)
 
   // Supabase Storage
   supabaseUrl: string;
@@ -96,7 +102,17 @@ export const config: EnvConfig = {
   verificationTokenExpiry: getEnvVariable('VERIFICATION_TOKEN_EXPIRY', '24h'),
   passwordResetTokenExpiry: getEnvVariable('PASSWORD_RESET_TOKEN_EXPIRY', '1h'),
 
-  // Supabase Storage
+  // Local-disk uploads root. Defaults to <project-root>/uploads; override with
+  // UPLOAD_DIR (in prod point it OUTSIDE the deploy dir so redeploys don't wipe it).
+  uploadDir: getEnvVariable('UPLOAD_DIR', path.join(__dirname, '../../uploads')),
+  // Public origin that serves local uploads. In production this MUST be the API
+  // server's real public origin (e.g. https://api.example.com) — it's baked into
+  // every stored image URL.
+  publicBaseUrl: (
+    process.env.PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || '5000'}`
+  ).replace(/\/+$/, ''),
+
+  // Supabase Storage (used by the Supabase driver; kept required in all envs).
   supabaseUrl: getEnvVariable('SUPABASE_URL'),
   supabaseServiceRoleKey: getEnvVariable('SUPABASE_SERVICE_ROLE_KEY'),
   supabaseStorageBucket: getEnvVariable('SUPABASE_STORAGE_BUCKET', 'images'),
@@ -107,8 +123,9 @@ export const config: EnvConfig = {
 
 // Validate critical env variables on startup
 export const validateEnv = (): void => {
-  // Required in every environment.
-  const criticalVars = [
+  // Required in every environment (Supabase stays required here — dev uses it,
+  // and prod keeps the creds available even though it serves from local disk).
+  const required = [
     'JWT_SECRET',
     'DATABASE_URL',
     'RESEND_API_KEY',
@@ -122,20 +139,16 @@ export const validateEnv = (): void => {
     'SUPABASE_SERVICE_ROLE_KEY',
   ];
 
-  // Additionally required in production — these have dev-friendly defaults that
-  // must never be used against real infrastructure.
-  const productionVars = [
-    'CLIENT_URL',        // used for OAuth redirects + email links
-    'DIRECT_URL',        // Prisma migrations (non-pooled connection)
-    'SUPABASE_STORAGE_BUCKET',
-  ];
+  // Production-only: dev-friendly defaults that must never hit real infra.
+  if (config.nodeEnv === 'production') {
+    required.push('CLIENT_URL'); // OAuth redirects + email links
+    required.push('DIRECT_URL'); // Prisma migrations (non-pooled connection)
+    // The local storage driver bakes this into every stored image URL — a wrong
+    // value can't be fixed without a DB rewrite, so demand it explicitly.
+    required.push('PUBLIC_BASE_URL');
+  }
 
-  const required =
-    config.nodeEnv === 'production'
-      ? [...criticalVars, ...productionVars]
-      : criticalVars;
-
-  const missing = required.filter((varName) => !process.env[varName]);
+  const missing = [...new Set(required)].filter((varName) => !process.env[varName]);
 
   if (missing.length > 0) {
     console.error('❌ Missing required environment variables:');
@@ -143,5 +156,6 @@ export const validateEnv = (): void => {
     throw new Error('Environment validation failed');
   }
 
-  console.log(`✅ Environment validated (${config.nodeEnv})`);
+  const storage = config.nodeEnv === 'production' ? 'local-disk' : 'supabase';
+  console.log(`✅ Environment validated (${config.nodeEnv}, storage=${storage})`);
 };
