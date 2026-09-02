@@ -1,19 +1,30 @@
 import prisma from "../config/database.config";
 import { AuthService } from "./auth.service";
 import { config } from "../config/env.config";
+import { ROLES } from "../constants/roles.constants";
 
 export class SeedService {
-  // Create admin user if it doesn't exist
+  // Ensure the seed account (ADMIN_EMAIL) exists as the platform SUPERADMIN.
+  // In this codebase role "admin" = vendor and "superadmin" = platform operator,
+  // so the seed must use superadmin — otherwise it creates a vendor.
   static async createAdminUser(): Promise<void> {
     try {
-      // Check if admin already exists
-      const existingAdmin = await prisma.user.findUnique({
+      const existing = await prisma.user.findUnique({
         where: { email: config.adminEmail },
       });
 
-      if (existingAdmin) return;
+      if (existing) {
+        // Self-heal an account created by the earlier (buggy) seed as a vendor.
+        if (existing.role !== ROLES.SUPERADMIN) {
+          await prisma.user.update({
+            where: { id: existing.id },
+            data: { role: ROLES.SUPERADMIN, isActive: true },
+          });
+          console.log("✅ Seed account promoted to superadmin");
+        }
+        return;
+      }
 
-      // Create admin user
       const passwordHash = await AuthService.hashPassword(config.adminPassword);
 
       await prisma.user.create({
@@ -22,14 +33,15 @@ export class SeedService {
           passwordHash,
           firstName: config.adminFirstName,
           lastName: config.adminLastName,
-          role: "admin",
-          isEmailVerified: true, // Admin doesn't need email verification
+          role: ROLES.SUPERADMIN,
+          isActive: true,
+          isEmailVerified: true, // Superadmin doesn't need email verification
         },
       });
 
-      console.log("✅ Admin user created");
+      console.log("✅ Superadmin user created");
     } catch (error) {
-      console.error("❌ Failed to create admin user:", error);
+      console.error("❌ Failed to create superadmin user:", error);
       throw error;
     }
   }
