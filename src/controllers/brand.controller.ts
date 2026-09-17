@@ -414,6 +414,7 @@ export class BrandController {
             isFeatured: updateData.isFeatured,
             metaTitle: updateData.metaTitle,
             metaDescription: updateData.metaDescription,
+            seoDescription: updateData.seoDescription,
             // ownerId handled above via reassignBrandOwner (do not set here).
           },
         });

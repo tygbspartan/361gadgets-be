@@ -4,6 +4,7 @@ export interface CreateCategoryRequest {
   name: string;
   slug?: string;
   description?: string;
+  seoDescription?: string;
   parentId?: number;
   level: number; // 1, 2, or 3
   displayOrder?: number;
@@ -13,9 +14,21 @@ export interface UpdateCategoryRequest {
   name?: string;
   slug?: string;
   description?: string;
+  seoDescription?: string;
   parentId?: number;
   displayOrder?: number;
   isActive?: boolean;
+}
+
+export interface CategoryTreeNode {
+  name: string;
+  description?: string;
+  children?: CategoryTreeNode[];
+}
+
+export interface CreateCategoryTreeRequest {
+  parentId?: number | null;
+  nodes: CategoryTreeNode[];
 }
 
 export interface CategoryResponse {
@@ -43,6 +56,7 @@ export interface CreateBrandRequest {
   logoUrl?: string;
   metaTitle?: string;
   metaDescription?: string;
+  seoDescription?: string;
   isFeatured?: boolean;
   ownerId?: number | null; // vendor this brand is reserved for (superadmin sets)
 }
@@ -56,6 +70,7 @@ export interface UpdateBrandRequest {
   isFeatured?: boolean;
   metaTitle?: string;
   metaDescription?: string;
+  seoDescription?: string;
   ownerId?: number | null; // reassign / clear brand ownership (superadmin)
 }
 

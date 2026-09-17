@@ -10,6 +10,8 @@ import {
 import {
   CreateCategoryRequest,
   UpdateCategoryRequest,
+  CreateCategoryTreeRequest,
+  CategoryTreeNode,
 } from "../types/product.types";
 import { CacheService, TTL } from "../services/cache.service";
 
@@ -99,6 +101,109 @@ export class CategoryController {
   // Bulk create categories (superadmin). All-or-nothing: if any item is invalid,
   // nothing is created and per-item errors are returned. Parent categories must
   // already exist in the DB (they can't be referenced from within the same batch).
+  // Create a whole subtree in one request (Admin only).
+  // Body: { parentId?: number|null, nodes: CategoryTreeNode[] }
+  // Levels are derived from parentId; the whole tree is created atomically.
+  static async createTree(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { parentId, nodes }: CreateCategoryTreeRequest = req.body;
+
+      if (!Array.isArray(nodes) || nodes.length === 0) {
+        throw new BadRequestError("At least one category is required");
+      }
+
+      // The top-level nodes' level is derived from the (optional) parent.
+      let startLevel = 1;
+      if (parentId != null) {
+        const parent = await prisma.category.findUnique({
+          where: { id: parentId },
+        });
+        if (!parent) {
+          throw new NotFoundError("Parent category not found");
+        }
+        startLevel = parent.level + 1;
+        if (startLevel > 3) {
+          throw new BadRequestError(
+            "That category is already at the deepest level (3) — you can't add subcategories under it."
+          );
+        }
+      }
+
+      // Validate names + depth up-front so nothing is created if the tree is bad.
+      const validate = (list: CategoryTreeNode[], level: number) => {
+        for (const node of list) {
+          if (!node?.name || !node.name.trim()) {
+            throw new BadRequestError("Every category needs a name");
+          }
+          const children = node.children ?? [];
+          if (children.length > 0) {
+            if (level >= 3) {
+              throw new BadRequestError(
+                `"${node.name}" is a level-3 group and can't have subcategories.`
+              );
+            }
+            validate(children, level + 1);
+          }
+        }
+      };
+      validate(nodes, startLevel);
+
+      // Load existing slugs once; dedupe new ones in memory (append -2, -3, …).
+      const existing = await prisma.category.findMany({ select: { slug: true } });
+      const usedSlugs = new Set(existing.map((c) => c.slug));
+      const uniqueSlug = (name: string): string => {
+        const base = SlugUtil.generateSlug(name);
+        let slug = base;
+        let n = 2;
+        while (usedSlugs.has(slug)) {
+          slug = `${base}-${n++}`;
+        }
+        usedSlugs.add(slug);
+        return slug;
+      };
+
+      const created = await prisma.$transaction(async (tx) => {
+        const out: any[] = [];
+        const createLevel = async (
+          list: CategoryTreeNode[],
+          level: number,
+          parent: number | null
+        ) => {
+          let order = 0;
+          for (const node of list) {
+            const cat = await tx.category.create({
+              data: {
+                name: node.name.trim(),
+                slug: uniqueSlug(node.name),
+                description: node.description?.trim() || null,
+                parentId: parent,
+                level,
+                displayOrder: order++,
+              },
+            });
+            out.push(cat);
+            const children = node.children ?? [];
+            if (children.length > 0) {
+              await createLevel(children, level + 1, cat.id);
+            }
+          }
+        };
+        await createLevel(nodes, startLevel, parentId ?? null);
+        return out;
+      });
+
+      await CacheService.invalidatePattern("categories:*");
+      return ResponseUtil.success(
+        res,
+        created,
+        `${created.length} categor${created.length === 1 ? "y" : "ies"} created successfully`,
+        201
+      );
+    } catch (error) {
+      next(error);
+    }
+  }
+
   static async bulkCreate(req: Request, res: Response, next: NextFunction) {
     try {
       const items: CreateCategoryRequest[] =

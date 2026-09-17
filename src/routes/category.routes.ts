@@ -17,6 +17,7 @@ router.get("/slug/:slug", CategoryController.getBySlug);
 router.get("/:id", authenticate, isAdmin, CategoryController.getById);
 
 // Mutations — superadmin only (vendors request new categories via /catalog-requests)
+router.post("/tree", authenticate, isSuperadmin, CategoryController.createTree);
 router.post("/bulk", authenticate, isSuperadmin, CategoryController.bulkCreate);
 router.post("/", authenticate, isSuperadmin, CategoryController.create);
 router.put("/:id", authenticate, isSuperadmin, CategoryController.update);
