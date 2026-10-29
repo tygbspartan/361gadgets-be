@@ -30,6 +30,7 @@ import {
   generateAdminOrderNotification,
 } from "../templates/orderEmails";
 import { config } from "../config/env.config";
+import { parsePagination } from "../utils/pagination.util";
 
 export class OrderController {
   // Checkout - Create order from cart
@@ -624,9 +625,7 @@ export class OrderController {
   static async getUserOrders(req: Request, res: Response, next: NextFunction) {
     try {
       const { status, paymentStatus, page = 1, limit = 20, search } = req.query;
-      const pageNum = parseInt(page as string);
-      const limitNum = parseInt(limit as string);
-      const skip = (pageNum - 1) * limitNum;
+      const { pageNum, limitNum, skip } = parsePagination(page, limit);
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
 
       const where: any = { userId: jwtPayload.userId };
@@ -757,9 +756,7 @@ export class OrderController {
       const isSuper = jwtPayload.role === ROLES.SUPERADMIN;
       const ownerId = jwtPayload.userId;
 
-      const pageNum = parseInt(page as string);
-      const limitNum = parseInt(limit as string);
-      const skip = (pageNum - 1) * limitNum;
+      const { pageNum, limitNum, skip } = parsePagination(page, limit);
 
       // Build filter
       const where: any = {};

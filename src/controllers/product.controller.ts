@@ -17,6 +17,7 @@ import {
 } from "../types/product.types";
 import { StorageService } from "../services/storage.service";
 import { CacheService, TTL } from "../services/cache.service";
+import { parsePagination, parseLimit } from "../utils/pagination.util";
 import { JwtPayload } from "../types/auth.types";
 import { assertOwnership } from "../utils/ownership.util";
 import { ROLES } from "../constants/roles.constants";
@@ -973,9 +974,7 @@ export class ProductController {
       const cached = await CacheService.get(cacheKey);
       if (cached) return ResponseUtil.success(res, cached, "Products retrieved successfully");
 
-      const pageNum = parseInt(page as string);
-      const limitNum = parseInt(limit as string);
-      const skip = (pageNum - 1) * limitNum;
+      const { pageNum, limitNum, skip } = parsePagination(page, limit);
 
       // Build where clause. Public storefront only ever shows active products
       // (deactivated products — e.g. from a deactivated vendor — stay hidden).
@@ -1116,9 +1115,7 @@ export class ProductController {
         sortOrder = "desc",
       } = req.query;
 
-      const pageNum = parseInt(page as string);
-      const limitNum = parseInt(limit as string);
-      const skip = (pageNum - 1) * limitNum;
+      const { pageNum, limitNum, skip } = parsePagination(page, limit);
 
       const where: any = {};
 
@@ -1194,7 +1191,7 @@ export class ProductController {
   // Get products with discounts (originalPrice > price)
   static getDiscountedProducts = async (req: Request, res: Response) => {
     try {
-      const { limit = 10 } = req.query;
+      const limit = parseLimit(req.query.limit, 10);
 
       const cacheKey = `products:discounted:${limit}`;
       const cached = await CacheService.get(cacheKey);
@@ -1224,7 +1221,7 @@ export class ProductController {
             },
           },
         },
-        take: parseInt(limit as string),
+        take: limit,
         orderBy: {
           createdAt: "desc",
         },
@@ -1242,7 +1239,7 @@ export class ProductController {
         pagination: {
           total: transformedProducts.length,
           page: 1,
-          limit: parseInt(limit as string),
+          limit,
         },
       });
     } catch (error) {

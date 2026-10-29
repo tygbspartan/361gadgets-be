@@ -14,6 +14,7 @@ import {
 } from "../types/review.types";
 import { JwtPayload } from "../types/auth.types";
 import { ROLES } from "../constants/roles.constants";
+import { parsePagination } from "../utils/pagination.util";
 
 export class ReviewController {
   // ==================== CUSTOMER ENDPOINTS ====================
@@ -213,6 +214,48 @@ export class ReviewController {
   }
 
   // Get user's own reviews
+  // Can the signed-in customer review this product? Same rule as create (a
+  // delivered order containing it), checked in the database so it holds
+  // however many orders they have. Also says whether they already have.
+  static async getEligibility(req: Request, res: Response, next: NextFunction) {
+    try {
+      const productId = parseInt(req.params.productId as string, 10);
+      if (!Number.isFinite(productId)) {
+        throw new BadRequestError("Invalid product ID");
+      }
+      const jwtPayload = (req as any).jwtPayload as JwtPayload;
+
+      const [order, review] = await Promise.all([
+        prisma.order.findFirst({
+          where: {
+            userId: jwtPayload.userId,
+            status: "delivered",
+            items: { some: { productId } },
+          },
+          select: { id: true },
+        }),
+        prisma.review.findUnique({
+          where: {
+            productId_userId_reviewType: {
+              productId,
+              userId: jwtPayload.userId,
+              reviewType: "initial",
+            },
+          } as any,
+          select: { id: true },
+        }),
+      ]);
+
+      return ResponseUtil.success(
+        res,
+        { canReview: !!order, hasReviewed: !!review },
+        "Review eligibility retrieved successfully",
+      );
+    } catch (error) {
+      next(error);
+    }
+  }
+
   static async getMyReviews(req: Request, res: Response, next: NextFunction) {
     try {
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
@@ -573,9 +616,7 @@ export class ReviewController {
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
       const isSuper = jwtPayload.role === ROLES.SUPERADMIN;
 
-      const pageNum = parseInt(page as string);
-      const limitNum = parseInt(limit as string);
-      const skip = (pageNum - 1) * limitNum;
+      const { pageNum, limitNum, skip } = parsePagination(page, limit);
 
       // Build filter
       const where: any = {};

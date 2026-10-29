@@ -1,5 +1,6 @@
 import express, { Application } from "express";
 import cors from "cors";
+import compression from "compression";
 import helmet from "helmet";
 import path from "path";
 import passport from "./config/passport.config";
@@ -36,6 +37,9 @@ app.use(
     credentials: true,
   })
 );
+// Gzip responses over ~1kb (the default threshold), so large JSON such as
+// product lists goes over the wire at a fraction of its size.
+app.use(compression());
 app.use(express.json({ limit: "500kb" }));
 app.use(express.urlencoded({ extended: true, limit: "500kb" }));
 app.use(requestLogger);

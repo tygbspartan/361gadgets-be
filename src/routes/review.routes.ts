@@ -20,6 +20,9 @@ router.post("/", authenticate, writeLimiter, validateBody(createReviewSchema), R
 // Add follow-up to an existing initial review (30-day gap enforced, needs admin approval)
 router.post("/:id/followup", authenticate, ReviewController.createFollowup);
 
+// Can I review this product? (delivered order containing it) + have I already?
+router.get("/product/:productId/eligibility", authenticate, ReviewController.getEligibility);
+
 // Get own reviews
 router.get("/my-reviews", authenticate, ReviewController.getMyReviews);
 
