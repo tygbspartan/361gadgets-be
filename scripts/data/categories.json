@@ -1,0 +1,893 @@
+[
+  {
+    "slug": "mobile",
+    "name": "Mobile",
+    "parent": null,
+    "level": 1,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Smartphones, tablets and mobile accessories"
+  },
+  {
+    "slug": "computers",
+    "name": "Computers",
+    "parent": null,
+    "level": 1,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Computers, components and peripherals"
+  },
+  {
+    "slug": "gaming-entertainment",
+    "name": "Gaming & Entertainment",
+    "parent": null,
+    "level": 1,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Gaming devices and entertainment"
+  },
+  {
+    "slug": "smart-devices",
+    "name": "Smart Devices",
+    "parent": null,
+    "level": 1,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Wearables and smart home devices"
+  },
+  {
+    "slug": "accessories-lifestyle",
+    "name": "Accessories & Lifestyle",
+    "parent": null,
+    "level": 1,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Photography, power and tech accessories"
+  },
+  {
+    "slug": "phones",
+    "name": "Phones",
+    "parent": "mobile",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Mobile phones"
+  },
+  {
+    "slug": "tablets",
+    "name": "Tablets",
+    "parent": "mobile",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Tablets"
+  },
+  {
+    "slug": "mobile-accessories",
+    "name": "Mobile Accessories",
+    "parent": "mobile",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Mobile accessories"
+  },
+  {
+    "slug": "audio",
+    "name": "Audio",
+    "parent": "mobile",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Personal audio"
+  },
+  {
+    "slug": "computers-and-laptops",
+    "name": "Computers and laptops",
+    "parent": "computers",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Computers and laptops"
+  },
+  {
+    "slug": "components",
+    "name": "Components",
+    "parent": "computers",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Computer components"
+  },
+  {
+    "slug": "peripherals",
+    "name": "Peripherals",
+    "parent": "computers",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Computer peripherals"
+  },
+  {
+    "slug": "computer-accessories",
+    "name": "Computer Accessories",
+    "parent": "computers",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Computer accessories"
+  },
+  {
+    "slug": "gaming",
+    "name": "Gaming",
+    "parent": "gaming-entertainment",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Gaming devices"
+  },
+  {
+    "slug": "gaming-accessories",
+    "name": "Gaming Accessories",
+    "parent": "gaming-entertainment",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Gaming accessories"
+  },
+  {
+    "slug": "tv-media",
+    "name": "TV & Media",
+    "parent": "gaming-entertainment",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "TV and media devices"
+  },
+  {
+    "slug": "home-audio",
+    "name": "Home Audio",
+    "parent": "gaming-entertainment",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Home audio"
+  },
+  {
+    "slug": "wearables",
+    "name": "Wearables",
+    "parent": "smart-devices",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Wearable devices"
+  },
+  {
+    "slug": "smart-home",
+    "name": "Smart Home",
+    "parent": "smart-devices",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Smart home products"
+  },
+  {
+    "slug": "networking",
+    "name": "Networking",
+    "parent": "smart-devices",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Networking devices"
+  },
+  {
+    "slug": "storage",
+    "name": "Storage",
+    "parent": "smart-devices",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Storage devices"
+  },
+  {
+    "slug": "photography",
+    "name": "Photography",
+    "parent": "accessories-lifestyle",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Photography equipment"
+  },
+  {
+    "slug": "power",
+    "name": "Power",
+    "parent": "accessories-lifestyle",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Power solutions"
+  },
+  {
+    "slug": "car-accessories",
+    "name": "Car Accessories",
+    "parent": "accessories-lifestyle",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "Automotive gadgets"
+  },
+  {
+    "slug": "tech-accessories",
+    "name": "Tech Accessories",
+    "parent": "accessories-lifestyle",
+    "level": 2,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": "General tech accessories"
+  },
+  {
+    "slug": "android-phones",
+    "name": "Android Phones",
+    "parent": "phones",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "iphones",
+    "name": "iPhones",
+    "parent": "phones",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "android-tablets",
+    "name": "Android Tablets",
+    "parent": "tablets",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "ipads",
+    "name": "iPads",
+    "parent": "tablets",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "cases",
+    "name": "Cases",
+    "parent": "mobile-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "screen-protectors",
+    "name": "Screen Protectors",
+    "parent": "mobile-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "chargers",
+    "name": "Chargers",
+    "parent": "mobile-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "cables",
+    "name": "Cables",
+    "parent": "mobile-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "power-banks",
+    "name": "Power Banks",
+    "parent": "mobile-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "tws-earbuds",
+    "name": "TWS Earbuds",
+    "parent": "audio",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "neckbands",
+    "name": "Neckbands",
+    "parent": "audio",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "wired-earphones",
+    "name": "Wired Earphones",
+    "parent": "audio",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "laptops",
+    "name": "Laptops",
+    "parent": "computers-and-laptops",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "desktop-pcs",
+    "name": "Desktop PCs",
+    "parent": "computers-and-laptops",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "mini-pcs",
+    "name": "Mini PCs",
+    "parent": "computers-and-laptops",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "ssd",
+    "name": "SSD",
+    "parent": "components",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "hdd",
+    "name": "HDD",
+    "parent": "components",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "ram",
+    "name": "RAM",
+    "parent": "components",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "graphics-cards",
+    "name": "Graphics Cards",
+    "parent": "components",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "motherboards",
+    "name": "Motherboards",
+    "parent": "components",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "processors",
+    "name": "Processors",
+    "parent": "components",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "monitors",
+    "name": "Monitors",
+    "parent": "peripherals",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "keyboards",
+    "name": "Keyboards",
+    "parent": "peripherals",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "mouse",
+    "name": "Mouse",
+    "parent": "peripherals",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "printers",
+    "name": "Printers",
+    "parent": "peripherals",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "webcams",
+    "name": "Webcams",
+    "parent": "peripherals",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "laptop-bags",
+    "name": "Laptop Bags",
+    "parent": "computer-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "cooling-pads",
+    "name": "Cooling Pads",
+    "parent": "computer-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "usb-hubs",
+    "name": "USB Hubs",
+    "parent": "computer-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "docking-stations",
+    "name": "Docking Stations",
+    "parent": "computer-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "playstation",
+    "name": "PlayStation",
+    "parent": "gaming",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "xbox",
+    "name": "Xbox",
+    "parent": "gaming",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "nintendo-switch",
+    "name": "Nintendo Switch",
+    "parent": "gaming",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "gaming-mouse",
+    "name": "Gaming Mouse",
+    "parent": "gaming-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "gaming-keyboard",
+    "name": "Gaming Keyboard",
+    "parent": "gaming-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "gaming-headsets",
+    "name": "Gaming Headsets",
+    "parent": "gaming-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "controllers",
+    "name": "Controllers",
+    "parent": "gaming-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "smart-tvs",
+    "name": "Smart TVs",
+    "parent": "tv-media",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "projectors",
+    "name": "Projectors",
+    "parent": "tv-media",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "tv-boxes",
+    "name": "TV Boxes",
+    "parent": "tv-media",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "soundbars",
+    "name": "Soundbars",
+    "parent": "home-audio",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "home-speakers",
+    "name": "Home Speakers",
+    "parent": "home-audio",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "smart-watches",
+    "name": "Smart Watches",
+    "parent": "wearables",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "fitness-bands",
+    "name": "Fitness Bands",
+    "parent": "wearables",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "smart-rings",
+    "name": "Smart Rings",
+    "parent": "wearables",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "smart-cameras",
+    "name": "Smart Cameras",
+    "parent": "smart-home",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "smart-locks",
+    "name": "Smart Locks",
+    "parent": "smart-home",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "smart-bulbs",
+    "name": "Smart Bulbs",
+    "parent": "smart-home",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "smart-plugs",
+    "name": "Smart Plugs",
+    "parent": "smart-home",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "routers",
+    "name": "Routers",
+    "parent": "networking",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "mesh-wifi",
+    "name": "Mesh WiFi",
+    "parent": "networking",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "wifi-extenders",
+    "name": "WiFi Extenders",
+    "parent": "networking",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "external-ssd",
+    "name": "External SSD",
+    "parent": "storage",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "external-hdd",
+    "name": "External HDD",
+    "parent": "storage",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "usb-flash-drives",
+    "name": "USB Flash Drives",
+    "parent": "storage",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "memory-cards",
+    "name": "Memory Cards",
+    "parent": "storage",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "cameras",
+    "name": "Cameras",
+    "parent": "photography",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "action-cameras",
+    "name": "Action Cameras",
+    "parent": "photography",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "tripods",
+    "name": "Tripods",
+    "parent": "photography",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "gimbals",
+    "name": "Gimbals",
+    "parent": "photography",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "ups",
+    "name": "UPS",
+    "parent": "power",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "extension-boards",
+    "name": "Extension Boards",
+    "parent": "power",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "portable-power-stations",
+    "name": "Portable Power Stations",
+    "parent": "power",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "dash-cams",
+    "name": "Dash Cams",
+    "parent": "car-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "phone-holders",
+    "name": "Phone Holders",
+    "parent": "car-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "car-chargers",
+    "name": "Car Chargers",
+    "parent": "car-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "bluetooth-trackers",
+    "name": "Bluetooth Trackers",
+    "parent": "tech-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "travel-adapters",
+    "name": "Travel Adapters",
+    "parent": "tech-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "cleaning-kits",
+    "name": "Cleaning Kits",
+    "parent": "tech-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "precision-tool-kits",
+    "name": "Precision Tool Kits",
+    "parent": "tech-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "headphones",
+    "name": "Headphones",
+    "parent": "audio",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "microphones",
+    "name": "Microphones",
+    "parent": "photography",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "drones",
+    "name": "Drones",
+    "parent": "photography",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  },
+  {
+    "slug": "mousepads",
+    "name": "Mousepads",
+    "parent": "gaming-accessories",
+    "level": 3,
+    "displayOrder": 0,
+    "isActive": true,
+    "description": null
+  }
+]
