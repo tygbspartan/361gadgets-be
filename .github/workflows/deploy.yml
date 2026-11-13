@@ -1,0 +1,137 @@
+name: Deploy backend
+
+# Deploys main to the VPS over SSH on port 443 (sslh). The deploy key can only
+# run deploy/backend.sh on the server (forced command in authorized_keys).
+#
+#   verify   type-check + unit tests on GitHub's machines
+#   plan     asks the server how many new Prisma migrations the commit brings
+#   approve  only when there ARE migrations: waits for a reviewer to approve
+#            (GitHub environment "production-migrations", required reviewers)
+#   deploy   server: build in a new release folder; if migrating, pg_dump first
+#            (abort if the backup fails), migrate, then switch + health check,
+#            rolling the code back if the new release is unhealthy
+#
+# Push to main deploys automatically only once the repository variable
+# AUTO_DEPLOY_BACKEND is set to "true". Until then, run it by hand from the
+# Actions tab: "check" verifies the server without changing anything.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "check = verify only, changes nothing; deploy = build and release"
+        type: choice
+        options: [check, deploy]
+        default: check
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Type-check
+        run: npx tsc --noEmit
+      - name: Unit tests
+        run: npx jest src/__tests__/unit --forceExit
+
+  plan:
+    needs: verify
+    if: github.event_name == 'workflow_dispatch' || vars.AUTO_DEPLOY_BACKEND == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    outputs:
+      migrations: ${{ steps.check.outputs.migrations }}
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Check server
+        id: check
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          out=$(ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" "check $GITHUB_SHA")
+          printf '%s\n' "$out"
+          count=$(printf '%s\n' "$out" | sed -n 's/^MIGRATION_COUNT=\([0-9]*\)$/\1/p' | tail -1)
+          [ -n "$count" ] || { echo "Server did not report a migration count"; exit 1; }
+          echo "migrations=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" != 0 ]; then
+            echo "::warning::This commit brings $count database migration(s). Deploying needs approval."
+          fi
+
+      - name: Remove key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
+
+  approve-migrations:
+    needs: plan
+    if: needs.plan.outputs.migrations != '0' && (github.event_name == 'push' || inputs.action == 'deploy')
+    runs-on: ubuntu-latest
+    environment: production-migrations
+    steps:
+      - run: echo "Approved ${{ needs.plan.outputs.migrations }} migration(s). The server takes a pg_dump before applying them."
+
+  deploy:
+    needs: [plan, approve-migrations]
+    if: >-
+      always() &&
+      needs.plan.result == 'success' &&
+      (needs.approve-migrations.result == 'success' || needs.approve-migrations.result == 'skipped') &&
+      (github.event_name == 'push' || inputs.action == 'deploy')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Deploy on server
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          MIGRATE: ${{ needs.approve-migrations.result == 'success' && ' migrate' || '' }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "deploy $GITHUB_SHA$MIGRATE"
+
+      - name: Remove key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
