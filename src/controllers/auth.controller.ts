@@ -28,6 +28,11 @@ import {
 } from "../types/auth.types";
 import { config } from "../config/env.config";
 
+// Where Google sign-in sends the browser back to: the storefront's handler
+// page, with the outcome (token=... or error=...) in the URL fragment.
+export const googleResultUrl = (fragment: string) =>
+  `${config.clientUrl}/auth/google/success#${fragment}`;
+
 export class AuthController {
   // Register new user
   static async register(req: Request, res: Response, next: NextFunction) {
@@ -189,6 +194,7 @@ export class AuthController {
             // Vendor (company) branding — used by the admin panel header/sidebar.
             companyName: user.companyName,
             logoUrl: user.logoUrl,
+            createdAt: user.createdAt,
           },
           token,
         },
@@ -564,7 +570,11 @@ export class AuthController {
       const user = (req as any).user;
 
       if (!user) {
-        throw new UnauthorizedError("Google authentication failed");
+        return res.redirect(googleResultUrl("error=google_failed"));
+      }
+      // Same rule as password login: a deactivated account gets no token.
+      if (!user.isActive) {
+        return res.redirect(googleResultUrl("error=account_disabled"));
       }
 
       // Generate JWT token
@@ -575,55 +585,10 @@ export class AuthController {
         tokenVersion: (user as any).tokenVersion ?? 0,
       });
 
-      // Redirect to frontend with token
-      // In production, you'd redirect to your React app
-      const redirectUrl = `${config.clientUrl}/auth/google/success?token=${token}`;
-
-      res.redirect(redirectUrl);
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  // For API testing - get user info after Google auth
-  static async googleSuccess(req: Request, res: Response, next: NextFunction) {
-    try {
-      const { token } = req.query;
-
-      if (!token || typeof token !== "string") {
-        throw new BadRequestError("Token is required");
-      }
-
-      // Verify token
-      const decoded = AuthService.verifyToken(token);
-
-      // Get user from database
-      const user = await prisma.user.findUnique({
-        where: { id: decoded.userId },
-        select: {
-          id: true,
-          email: true,
-          firstName: true,
-          lastName: true,
-          phone: true,
-          role: true,
-          isEmailVerified: true,
-          createdAt: true,
-        },
-      });
-
-      if (!user) {
-        throw new UnauthorizedError("User not found");
-      }
-
-      return ResponseUtil.success(
-        res,
-        {
-          user,
-          token,
-        },
-        "Google authentication successful"
-      );
+      // The token goes in the URL fragment (#), not the query string: browsers
+      // never send the fragment to a server, so it stays out of server and
+      // proxy logs and Referer headers. The page reads it and clears the URL.
+      res.redirect(googleResultUrl(`token=${encodeURIComponent(token)}`));
     } catch (error) {
       next(error);
     }

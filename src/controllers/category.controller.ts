@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../config/database.config";
 import { ResponseUtil } from "../utils/response.util";
+import { parseId, parseIntParam } from "../utils/parseId.util";
 import { SlugUtil } from "../utils/slug.util";
 import {
   BadRequestError,
@@ -14,6 +15,7 @@ import {
   CategoryTreeNode,
 } from "../types/product.types";
 import { CacheService, TTL } from "../services/cache.service";
+import { faqsForDb, withoutLongCategoryFields } from "../utils/faqs.util";
 
 export class CategoryController {
   // Create category (Admin only)
@@ -23,10 +25,14 @@ export class CategoryController {
         name,
         slug,
         description,
+        seoDescription,
+        seoContent,
+        faqs,
         parentId,
         level,
         displayOrder,
-      }: CreateCategoryRequest = req.body;
+        isActive,
+      }: CreateCategoryRequest = req.body; // validated by createCategorySchema
 
       // Validation
       if (!name) {
@@ -82,9 +88,13 @@ export class CategoryController {
           name,
           slug: categorySlug,
           description,
+          seoDescription,
+          seoContent,
+          faqs: faqsForDb(faqs),
           parentId,
           level,
           displayOrder: displayOrder || 0,
+          isActive: isActive ?? true,
         },
         include: {
           parent: true,
@@ -339,11 +349,11 @@ export class CategoryController {
       const where: any = {};
 
       if (level) {
-        where.level = parseInt(level as string);
+        where.level = parseIntParam(level, "level");
       }
 
       if (parentId) {
-        where.parentId = parseInt(parentId as string);
+        where.parentId = parseId(parentId, "parentId");
       }
 
       if (isActive !== undefined) {
@@ -366,7 +376,7 @@ export class CategoryController {
 
       // Transform response to include counts
       const response = categories.map((category) => ({
-        ...category,
+        ...withoutLongCategoryFields(category),
         productCount: category._count.products,
         childrenCount: category._count.children,
         _count: undefined, // Remove internal count object
@@ -416,8 +426,9 @@ export class CategoryController {
         orderBy: { displayOrder: "asc" },
       });
 
-      CacheService.setBackground("categories:tree", categories, TTL.CATEGORY);
-      return ResponseUtil.success(res, categories, "Category tree retrieved successfully");
+      const tree = categories.map(withoutLongCategoryFields);
+      CacheService.setBackground("categories:tree", tree, TTL.CATEGORY);
+      return ResponseUtil.success(res, tree, "Category tree retrieved successfully");
     } catch (error) {
       next(error);
     }
@@ -450,7 +461,13 @@ export class CategoryController {
         throw new NotFoundError("Category not found");
       }
 
-      const response = { ...category, productCount: category._count.products };
+      // The category's own SEO copy and FAQ are kept; its parent/children are trimmed.
+      const response = {
+        ...category,
+        parent: category.parent ? withoutLongCategoryFields(category.parent) : null,
+        children: category.children.map(withoutLongCategoryFields),
+        productCount: category._count.products,
+      };
       CacheService.setBackground(cacheKey, response, TTL.CATEGORY);
       return ResponseUtil.success(res, response, "Category retrieved successfully");
     } catch (error) {
@@ -464,7 +481,7 @@ export class CategoryController {
       const { id } = req.params;
 
       const category = await prisma.category.findUnique({
-        where: { id: parseInt(id) },
+        where: { id: parseId(id) },
         include: {
           parent: true,
           children: true,
@@ -492,11 +509,12 @@ export class CategoryController {
   static async update(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
-      const updateData: UpdateCategoryRequest = req.body;
+      // Validated by updateCategorySchema: only editable fields get through.
+      const { faqs, ...updateData }: UpdateCategoryRequest = req.body;
 
       // Check if category exists
       const existingCategory = await prisma.category.findUnique({
-        where: { id: parseInt(id) },
+        where: { id: parseId(id) },
       });
 
       if (!existingCategory) {
@@ -516,7 +534,7 @@ export class CategoryController {
 
       // If updating parentId, validate it
       if (updateData.parentId !== undefined) {
-        if (updateData.parentId === parseInt(id)) {
+        if (updateData.parentId === parseId(id)) {
           throw new BadRequestError("Category cannot be its own parent");
         }
 
@@ -533,8 +551,8 @@ export class CategoryController {
 
       // Update category
       const category = await prisma.category.update({
-        where: { id: parseInt(id) },
-        data: updateData,
+        where: { id: parseId(id) },
+        data: { ...updateData, faqs: faqsForDb(faqs) },
         include: {
           parent: true,
           children: true,
@@ -555,7 +573,7 @@ export class CategoryController {
 
       // Check if category exists
       const category = await prisma.category.findUnique({
-        where: { id: parseInt(id) },
+        where: { id: parseId(id) },
         include: {
           children: true,
           _count: {
@@ -584,7 +602,7 @@ export class CategoryController {
 
       // Delete category
       await prisma.category.delete({
-        where: { id: parseInt(id) },
+        where: { id: parseId(id) },
       });
 
       await CacheService.invalidatePattern("categories:*");

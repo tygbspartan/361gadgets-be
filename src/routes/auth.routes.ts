@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import passport from '../config/passport.config';
-import { AuthController } from '../controllers/auth.controller';
+import { AuthController, googleResultUrl } from '../controllers/auth.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authLimiter } from '../middleware/rateLimit';
 import { validateBody } from '../middleware/validate';
@@ -37,13 +37,12 @@ router.get(
   '/google/callback',
   passport.authenticate('google', { 
     session: false,
-    failureRedirect: '/api/auth/google/failure' 
+    // Cancelled or failed Google sign-in: back to the storefront, which shows
+    // the error and returns to the login page.
+    failureRedirect: googleResultUrl('error=google_failed'),
   }),
   AuthController.googleCallback
 );
-
-// For testing Google auth in Postman
-router.get('/google/success', AuthController.googleSuccess);
 
 // Protected routes (require authentication)
 router.get('/me', authenticate, AuthController.getCurrentUser);

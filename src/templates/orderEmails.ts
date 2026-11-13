@@ -1,7 +1,25 @@
-interface OrderEmailData {
-  customerName: string;
+import { config } from "../config/env.config";
+import {
+  EMAIL_COLORS as C,
+  button,
+  callout,
+  detailList,
+  emailLayout,
+  esc,
+  formatRs,
+  metaRow,
+  panel,
+  paragraph,
+  sectionTitle,
+} from "./emailLayout";
+
+export interface OrderEmailData {
+  orderId: number;
   orderNumber: string;
   orderDate: string;
+  customerName: string;
+  customerEmail: string;
+  customerPhone: string;
   items: Array<{
     name: string;
     quantity: number;
@@ -10,312 +28,140 @@ interface OrderEmailData {
   subtotal: number;
   shippingCost: number;
   discount: number;
+  discountCode: string | null;
   total: number;
   paymentMethod: string;
-  shippingAddress: string;
+  transactionNumber: string | null;
+  customerNote: string | null;
+  // One entry per printed line; blank parts already removed.
+  addressLines: string[];
+}
+
+const PAYMENT_LABELS: Record<string, string> = {
+  cod: "Cash on delivery",
+  esewa: "eSewa QR",
+  khalti: "Khalti",
+  bank_transfer: "Bank transfer",
+};
+
+const paymentLabel = (method: string) => PAYMENT_LABELS[method] ?? method;
+
+function itemsTable(items: OrderEmailData["items"]): string {
+  const rows = items
+    .map(
+      (item, i) => `<tr>
+        <td valign="top" style="padding:14px 12px 14px 0;${i ? `border-top:1px solid ${C.border};` : ""}">
+          <p style="margin:0 0 4px;font-family:Montserrat,Helvetica,Arial,sans-serif;font-size:14px;font-weight:600;line-height:1.4;color:${C.ink};">${esc(item.name)}</p>
+          <p style="margin:0;font-family:Helvetica,Arial,sans-serif;font-size:12px;color:${C.muted};">Qty ${item.quantity} &times; ${formatRs(item.price)}</p>
+        </td>
+        <td valign="top" align="right" style="padding:14px 0;${i ? `border-top:1px solid ${C.border};` : ""}font-family:Helvetica,Arial,sans-serif;font-size:14px;font-weight:600;color:${C.ink};white-space:nowrap;">${formatRs(item.price * item.quantity)}</td>
+      </tr>`,
+    )
+    .join("");
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 4px;">${rows}</table>`;
+}
+
+function totalsTable(data: OrderEmailData): string {
+  const row = (label: string, value: string) => `<tr>
+      <td style="padding:5px 0;font-family:Helvetica,Arial,sans-serif;font-size:14px;color:${C.body};">${label}</td>
+      <td align="right" style="padding:5px 0;font-family:Helvetica,Arial,sans-serif;font-size:14px;color:${C.ink};">${value}</td>
+    </tr>`;
+
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid ${C.border};margin:0 0 28px;padding-top:10px;">
+    ${row("Subtotal", formatRs(data.subtotal))}
+    ${row("Shipping", data.shippingCost > 0 ? formatRs(data.shippingCost) : "Free")}
+    ${data.discount > 0 ? row(data.discountCode ? `Discount (${esc(data.discountCode)})` : "Discount", `&minus; ${formatRs(data.discount)}`) : ""}
+    <tr>
+      <td style="padding:14px 0 0;border-top:1px solid ${C.border};font-family:Montserrat,Helvetica,Arial,sans-serif;font-size:15px;font-weight:700;color:${C.ink};">Total</td>
+      <td align="right" style="padding:14px 0 0;border-top:1px solid ${C.border};font-family:Montserrat,Helvetica,Arial,sans-serif;font-size:20px;font-weight:700;color:${C.ink};">${formatRs(data.total)}</td>
+    </tr>
+  </table>`;
+}
+
+function addressHtml(data: OrderEmailData): string {
+  return `<p style="margin:0;font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.7;color:${C.body};">
+    <strong style="color:${C.ink};">${esc(data.customerName)}</strong><br />
+    ${data.addressLines.map(esc).join("<br />")}<br />
+    ${esc(data.customerPhone)}
+  </p>`;
 }
 
 export const generateCustomerOrderEmail = (data: OrderEmailData): string => {
-  return `
-<!DOCTYPE html>
-<html>
-<head>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      line-height: 1.6;
-      color: #333;
-      max-width: 600px;
-      margin: 0 auto;
-      padding: 20px;
-    }
-    .header {
-      background-color: #ed1b24;
-      color: white;
-      padding: 20px;
-      text-align: center;
-      border-radius: 5px 5px 0 0;
-    }
-    .content {
-      background-color: #f9f9f9;
-      padding: 20px;
-      border: 1px solid #ddd;
-      border-top: none;
-    }
-    .order-details {
-      background-color: white;
-      padding: 15px;
-      margin: 15px 0;
-      border-radius: 5px;
-    }
-    .item {
-      padding: 10px 0;
-      border-bottom: 1px solid #eee;
-    }
-    .item:last-child {
-      border-bottom: none;
-    }
-    .totals {
-      margin-top: 15px;
-      padding-top: 15px;
-      border-top: 2px solid #ddd;
-    }
-    .total-row {
-      display: flex;
-      justify-content: space-between;
-      padding: 5px 0;
-    }
-    .total-row.final {
-      font-size: 18px;
-      font-weight: bold;
-      color: #ed1b24;
-    }
-    .footer {
-      text-align: center;
-      padding: 20px;
-      color: #666;
-      font-size: 12px;
-    }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <h1>Thank You for Your Order!</h1>
-  </div>
-  
-  <div class="content">
-    <p>Dear ${data.customerName},</p>
-    
-    <p>Thank you for choosing 361 Gadgets! We're excited to process your order.</p>
-    
-    <div class="order-details">
-      <h2>Order Details</h2>
-      <p><strong>Order Number:</strong> ${data.orderNumber}</p>
-      <p><strong>Order Date:</strong> ${data.orderDate}</p>
-      <p><strong>Payment Method:</strong> ${data.paymentMethod}</p>
-      
-      <h3>Items Ordered:</h3>
-      ${data.items
-        .map(
-          (item) => `
-        <div class="item">
-          <strong>${item.name}</strong><br>
-          Quantity: ${item.quantity} × Rs ${item.price.toFixed(2)} = Rs ${(
-            item.quantity * item.price
-          ).toFixed(2)}
-        </div>
-      `
-        )
-        .join("")}
-      
-      <div class="totals">
-        <div class="total-row">
-          <span>Subtotal:</span>
-          <span>Rs ${data.subtotal.toFixed(2)}</span>
-        </div>
-        ${
-          data.discount > 0
-            ? `
-        <div class="total-row">
-          <span>Discount:</span>
-          <span>- Rs ${data.discount.toFixed(2)}</span>
-        </div>
-        `
-            : ""
-        }
-        <div class="total-row">
-          <span>Shipping:</span>
-          <span>Rs ${data.shippingCost.toFixed(2)}</span>
-        </div>
-        <div class="total-row final">
-          <span>Total:</span>
-          <span>Rs ${data.total.toFixed(2)}</span>
-        </div>
-      </div>
-      
-      <h3>Shipping Address:</h3>
-      <p>${data.shippingAddress}</p>
-    </div>
-    
-    <p>We'll send you another email once your order has been shipped.</p>
-    
-    <p>If you have any questions about your order, please don't hesitate to contact us.</p>
-    
-    <p>Best regards,<br>
-    <strong>The 361 Gadgets Team</strong></p>
-  </div>
-  
-  <div class="footer">
-    <p>This is an automated email. Please do not reply to this message.</p>
-    <p>&copy; ${new Date().getFullYear()} 361 Gadgets. All rights reserved.</p>
-  </div>
-</body>
-</html>
+  const orderUrl = `${config.clientUrl}/order-confirmation/${encodeURIComponent(data.orderNumber)}?email=${encodeURIComponent(data.customerEmail)}`;
+  const firstName = data.customerName.trim().split(/\s+/)[0] || "there";
+
+  const body = `
+    ${paragraph(`Hi ${esc(firstName)}, thanks for shopping with 361 Gadgets. We&rsquo;ve received your order and are getting it ready. Here&rsquo;s a summary for your records.`, 8)}
+    ${metaRow([
+      ["Order number", esc(data.orderNumber)],
+      ["Placed on", esc(data.orderDate)],
+      ["Payment", esc(paymentLabel(data.paymentMethod))],
+    ])}
+    ${sectionTitle("Your items")}
+    ${itemsTable(data.items)}
+    ${totalsTable(data)}
+    ${panel("Delivering to", addressHtml(data))}
+    ${sectionTitle("What happens next")}
+    ${detailList([
+      ["1. Preparation", "We verify your order and pack it for dispatch."],
+      ["2. Delivery", "Your order arrives within 2&ndash;3 business days."],
+      ["3. Payment", data.paymentMethod === "cod" ? "Pay in cash when your order arrives." : "We confirm your payment before dispatch."],
+    ])}
+    <div style="height:24px;line-height:24px;">&nbsp;</div>
+    ${button("View your order", orderUrl)}
   `;
+
+  return emailLayout({
+    preheader: `Order ${data.orderNumber} confirmed — ${formatRs(data.total)}.`,
+    eyebrow: "Order confirmed",
+    title: "Thank you for your order",
+    body,
+    footnote: "You&rsquo;re receiving this because an order was placed with this email address at 361 Gadgets.",
+  });
 };
 
-export const generateAdminOrderNotification = (
-  data: OrderEmailData & { customerEmail: string; customerPhone: string }
-): string => {
-  return `
-<!DOCTYPE html>
-<html>
-<head>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      line-height: 1.6;
-      color: #333;
-      max-width: 600px;
-      margin: 0 auto;
-      padding: 20px;
+export const generateAdminOrderNotification = (data: OrderEmailData): string => {
+  const adminUrl = `${config.clientUrl}/admin/orders/${data.orderId}`;
+  const needsVerification = data.paymentMethod !== "cod";
+
+  const body = `
+    ${paragraph(`A new order was placed by <strong style="color:${C.ink};">${esc(data.customerName)}</strong> and is waiting to be processed.`, 8)}
+    ${metaRow([
+      ["Order number", esc(data.orderNumber)],
+      ["Total", formatRs(data.total)],
+      ["Payment", esc(paymentLabel(data.paymentMethod))],
+    ])}
+    ${
+      needsVerification
+        ? callout(
+            `<strong>Payment needs verification.</strong> Transaction number: ${
+              data.transactionNumber ? `<strong>${esc(data.transactionNumber)}</strong>` : "<em>not provided</em>"
+            }. Confirm it before dispatching.`,
+          )
+        : ""
     }
-    .header {
-      background-color: #2563eb;
-      color: white;
-      padding: 20px;
-      text-align: center;
-      border-radius: 5px 5px 0 0;
-    }
-    .content {
-      background-color: #f9f9f9;
-      padding: 20px;
-      border: 1px solid #ddd;
-      border-top: none;
-    }
-    .alert-box {
-      background-color: #fef3c7;
-      border-left: 4px solid #f59e0b;
-      padding: 15px;
-      margin: 15px 0;
-    }
-    .order-details {
-      background-color: white;
-      padding: 15px;
-      margin: 15px 0;
-      border-radius: 5px;
-    }
-    .item {
-      padding: 10px 0;
-      border-bottom: 1px solid #eee;
-    }
-    .item:last-child {
-      border-bottom: none;
-    }
-    .totals {
-      margin-top: 15px;
-      padding-top: 15px;
-      border-top: 2px solid #ddd;
-    }
-    .total-row {
-      display: flex;
-      justify-content: space-between;
-      padding: 5px 0;
-    }
-    .total-row.final {
-      font-size: 18px;
-      font-weight: bold;
-      color: #2563eb;
-    }
-    .action-button {
-      display: inline-block;
-      background-color: #2563eb;
-      color: white;
-      padding: 12px 24px;
-      text-decoration: none;
-      border-radius: 5px;
-      margin: 15px 0;
-    }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <h1>🔔 New Order Received!</h1>
-  </div>
-  
-  <div class="content">
-    <div class="alert-box">
-      <strong>Action Required:</strong> A new order has been placed and requires processing.
-    </div>
-    
-    <div class="order-details">
-      <h2>Order Information</h2>
-      <p><strong>Order Number:</strong> ${data.orderNumber}</p>
-      <p><strong>Order Date:</strong> ${data.orderDate}</p>
-      <p><strong>Payment Method:</strong> ${data.paymentMethod}</p>
-      ${
-        data.paymentMethod !== "Cash on Delivery"
-          ? `<p><strong>⚠️ Payment Status:</strong> Awaiting Verification</p>`
-          : ""
-      }
-      
-      <h3>Customer Details:</h3>
-      <p><strong>Name:</strong> ${data.customerName}</p>
-      <p><strong>Email:</strong> ${data.customerEmail}</p>
-      <p><strong>Phone:</strong> ${data.customerPhone}</p>
-      
-      <h3>Items Ordered:</h3>
-      ${data.items
-        .map(
-          (item) => `
-        <div class="item">
-          <strong>${item.name}</strong><br>
-          Quantity: ${item.quantity} × Rs ${item.price.toFixed(2)} = Rs ${(
-            item.quantity * item.price
-          ).toFixed(2)}
-        </div>
-      `
-        )
-        .join("")}
-      
-      <div class="totals">
-        <div class="total-row">
-          <span>Subtotal:</span>
-          <span>Rs ${data.subtotal.toFixed(2)}</span>
-        </div>
-        ${
-          data.discount > 0
-            ? `
-        <div class="total-row">
-          <span>Discount:</span>
-          <span>- Rs ${data.discount.toFixed(2)}</span>
-        </div>
-        `
-            : ""
-        }
-        <div class="total-row">
-          <span>Shipping:</span>
-          <span>Rs ${data.shippingCost.toFixed(2)}</span>
-        </div>
-        <div class="total-row final">
-          <span>Total:</span>
-          <span>Rs ${data.total.toFixed(2)}</span>
-        </div>
-      </div>
-      
-      <h3>Shipping Address:</h3>
-      <p>${data.shippingAddress}</p>
-    </div>
-    
-    <p style="text-align: center;">
-      <a href="${process.env.CLIENT_URL}/admin/orders" class="action-button">
-        View Order in Admin Panel
-      </a>
-    </p>
-    
-    <p><strong>Next Steps:</strong></p>
-    <ul>
-      ${
-        data.paymentMethod !== "Cash on Delivery"
-          ? "<li>Verify the payment transaction</li>"
-          : ""
-      }
-      <li>Update order status to 'Processing'</li>
-      <li>Prepare items for shipment</li>
-      <li>Update customer with tracking information</li>
-    </ul>
-  </div>
-</body>
-</html>
+    ${panel(
+      "Customer",
+      detailList([
+        ["Name", esc(data.customerName)],
+        ["Email", `<a href="mailto:${esc(data.customerEmail)}" style="color:${C.ink};">${esc(data.customerEmail)}</a>`],
+        ["Phone", `<a href="tel:${esc(data.customerPhone)}" style="color:${C.ink};">${esc(data.customerPhone)}</a>`],
+        ["Placed on", esc(data.orderDate)],
+      ]),
+    )}
+    ${sectionTitle(`Items (${data.items.reduce((n, i) => n + i.quantity, 0)})`)}
+    ${itemsTable(data.items)}
+    ${totalsTable(data)}
+    ${panel("Ship to", addressHtml(data))}
+    ${data.customerNote ? panel("Customer note", paragraph(esc(data.customerNote), 0)) : ""}
+    ${button("Open in admin panel", adminUrl)}
   `;
+
+  return emailLayout({
+    preheader: `${data.customerName} — ${formatRs(data.total)} via ${paymentLabel(data.paymentMethod)}.`,
+    eyebrow: "Admin notification",
+    title: "New order received",
+    body,
+    footnote: "Next steps: verify payment if needed, move the order to Processing, then pack and ship.",
+  });
 };

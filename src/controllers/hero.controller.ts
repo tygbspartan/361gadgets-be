@@ -3,6 +3,7 @@ import prismaClient from "../config/database.config";
 
 const prisma = prismaClient as any;
 import { ResponseUtil } from "../utils/response.util";
+import { parseId, parseIntParam } from "../utils/parseId.util";
 import { BadRequestError, NotFoundError } from "../utils/customError.util";
 import { StorageService } from "../services/storage.service";
 
@@ -48,7 +49,7 @@ export class HeroController {
       });
       const nextOrder =
         displayOrder !== undefined
-          ? parseInt(displayOrder)
+          ? parseIntParam(displayOrder, "display order")
           : (lastImage?.displayOrder ?? -1) + 1;
 
       const image = await prisma.heroImage.create({
@@ -74,16 +75,16 @@ export class HeroController {
       const { altText, linkUrl, displayOrder, isActive } = req.body;
 
       const existing = await prisma.heroImage.findUnique({
-        where: { id: parseInt(id) },
+        where: { id: parseId(id) },
       });
       if (!existing) throw new NotFoundError("Hero image not found");
 
       const image = await prisma.heroImage.update({
-        where: { id: parseInt(id) },
+        where: { id: parseId(id) },
         data: {
           altText: altText !== undefined ? altText : existing.altText,
           linkUrl: linkUrl !== undefined ? linkUrl : existing.linkUrl,
-          displayOrder: displayOrder !== undefined ? parseInt(displayOrder) : existing.displayOrder,
+          displayOrder: displayOrder !== undefined ? parseIntParam(displayOrder, "display order") : existing.displayOrder,
           isActive: isActive !== undefined ? isActive : existing.isActive,
         },
       });
@@ -100,13 +101,13 @@ export class HeroController {
       const { id } = req.params;
 
       const image = await prisma.heroImage.findUnique({
-        where: { id: parseInt(id) },
+        where: { id: parseId(id) },
       });
       if (!image) throw new NotFoundError("Hero image not found");
 
       await Promise.all([
         StorageService.deleteImage(image.imageUrl),
-        prisma.heroImage.delete({ where: { id: parseInt(id) } }),
+        prisma.heroImage.delete({ where: { id: parseId(id) } }),
       ]);
 
       return ResponseUtil.success(res, null, "Hero image deleted successfully");

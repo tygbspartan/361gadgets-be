@@ -52,6 +52,16 @@ export class TooManyRequestsError extends CustomError {
   }
 }
 
+// A discount code that can't be applied. The `errorCode` lets the client tell
+// this apart from other 400s (checkout drops the code and shows the reason).
+export class DiscountError extends CustomError {
+  errorCode = "DISCOUNT_INVALID";
+
+  constructor(message: string) {
+    super(message, 400);
+  }
+}
+
 export class InternalServerError extends CustomError {
   constructor(message: string = "Internal Server Error") {
     super(message, 500);

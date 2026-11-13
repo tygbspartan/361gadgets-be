@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../config/database.config";
 import { ResponseUtil } from "../utils/response.util";
+import { parseId } from "../utils/parseId.util";
 import {
   BadRequestError,
   NotFoundError,
@@ -212,7 +213,7 @@ export class CartController {
       const { quantity }: UpdateCartItemRequest = req.body;
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
 
-      const cartItemId = parseInt(id);
+      const cartItemId = parseId(id);
 
       if (!quantity || quantity < 1) {
         throw new BadRequestError("Valid quantity is required");
@@ -271,7 +272,7 @@ export class CartController {
       const { id } = req.params;
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
 
-      const cartItemId = parseInt(id);
+      const cartItemId = parseId(id);
 
       // Check if cart item exists and belongs to user
       const cartItem = await prisma.cartItem.findUnique({

@@ -1,164 +1,111 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../config/database.config";
 import { ResponseUtil } from "../utils/response.util";
+import { parseId } from "../utils/parseId.util";
+import { parsePagination } from "../utils/pagination.util";
 import {
   BadRequestError,
   NotFoundError,
   ConflictError,
 } from "../utils/customError.util";
-import {
-  CreateDiscountRequest,
-  UpdateDiscountRequest,
-  ApplyDiscountRequest,
-} from "../types/discount.types";
+import type { z } from "zod";
+import type {
+  createDiscountSchema,
+  updateDiscountSchema,
+  validateDiscountSchema,
+} from "../validators/schemas";
 import { JwtPayload } from "../types/auth.types";
 import { assertOwnership } from "../utils/ownership.util";
+import { evaluateDiscount, linesFromItems } from "../services/discount.service";
 import { ROLES } from "../constants/roles.constants";
 
 // Forbidden message reused across owner-scoped discount actions
 const DISCOUNT_FORBIDDEN = "You can only manage your own discounts.";
 
+type CreateDiscountInput = z.output<typeof createDiscountSchema>;
+type UpdateDiscountInput = z.output<typeof updateDiscountSchema>;
+
+// Returned with a created/updated discount so the admin UI can list products.
+const DISCOUNT_PRODUCTS_INCLUDE = {
+  products: {
+    include: { product: { select: { id: true, name: true } } },
+  },
+} as const;
+
 export class DiscountController {
   // ==================== ADMIN ENDPOINTS ====================
 
-  // Create discount (Admin/Vendor)
+  // Create discount (Admin/Vendor). Body is validated by createDiscountSchema.
   static async create(req: Request, res: Response, next: NextFunction) {
     try {
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
-      const {
-        name,
-        code,
-        type,
-        value,
-        minPurchaseAmount,
-        maxDiscountAmount,
-        startDate,
-        endDate,
-        usageLimit,
-        productIds,
-      }: CreateDiscountRequest = req.body;
+      const { productIds, ...fields } = req.body as CreateDiscountInput;
 
-      // Validation
-      if (!name || !code || !type || !value || !startDate || !endDate) {
-        throw new BadRequestError(
-          "Name, code, type, value, start date, and end date are required",
-        );
-      }
-
-      if (type !== "percentage" && type !== "fixed") {
-        throw new BadRequestError('Type must be "percentage" or "fixed"');
-      }
-
-      if (value <= 0) {
-        throw new BadRequestError("Value must be greater than 0");
-      }
-
-      if (type === "percentage" && value > 100) {
-        throw new BadRequestError("Percentage value cannot exceed 100");
-      }
-
-      // Check if code already exists
       const existingCode = await prisma.discount.findUnique({
-        where: { code: code.toUpperCase() },
+        where: { code: fields.code },
       });
-
       if (existingCode) {
-        throw new ConflictError(`Discount code "${code}" already exists`);
+        throw new ConflictError(`Discount code "${fields.code}" already exists`);
       }
 
-      // Validate dates
-      const start = new Date(startDate);
-      const end = new Date(endDate);
-
-      if (end <= start) {
-        throw new BadRequestError("End date must be after start date");
+      if (productIds?.length) {
+        await DiscountController.assertLinkableProducts(productIds, jwtPayload);
       }
 
-      // ✅ Validate product IDs if provided
-      if (productIds && productIds.length > 0) {
-        const products = await prisma.product.findMany({
-          where: {
-            id: {
-              in: productIds,
-            },
+      // Discount and its product links together: a failure leaves neither.
+      const discount = await prisma.$transaction(async (tx) => {
+        const created = await tx.discount.create({
+          data: {
+            ...fields,
+            isActive: fields.isActive ?? true,
+            oncePerUser: fields.oncePerUser ?? false,
+            ownerId: jwtPayload.userId,
           },
-          select: { id: true, ownerId: true },
         });
-
-        if (products.length !== productIds.length) {
-          const foundIds = products.map((p) => p.id);
-          const missingIds = productIds.filter((id) => !foundIds.includes(id));
-          throw new BadRequestError(
-            `Products with IDs ${missingIds.join(", ")} not found`,
-          );
+        if (productIds?.length) {
+          await tx.productDiscount.createMany({
+            data: productIds.map((productId) => ({ productId, discountId: created.id })),
+          });
         }
-
-        // A vendor may only attach a discount to their own products
-        if (jwtPayload.role !== ROLES.SUPERADMIN) {
-          const foreign = products.filter((p) => p.ownerId !== jwtPayload.userId);
-          if (foreign.length > 0) {
-            throw new BadRequestError(
-              "You can only attach discounts to your own products",
-            );
-          }
-        }
-      }
-
-      // Create discount (owned by the creating vendor)
-      const discount = await prisma.discount.create({
-        data: {
-          name,
-          code: code.toUpperCase(),
-          type,
-          value,
-          minPurchaseAmount,
-          maxDiscountAmount,
-          startDate: start,
-          endDate: end,
-          usageLimit,
-          ownerId: jwtPayload.userId,
-        },
-      });
-
-      // Link to specific products if provided
-      if (productIds && productIds.length > 0) {
-        await Promise.all(
-          productIds.map((productId) =>
-            prisma.productDiscount.create({
-              data: {
-                productId,
-                discountId: discount.id,
-              },
-            }),
-          ),
-        );
-      }
-
-      // Fetch discount with products
-      const discountWithProducts = await prisma.discount.findUnique({
-        where: { id: discount.id },
-        include: {
-          products: {
-            include: {
-              product: {
-                select: {
-                  id: true,
-                  name: true,
-                },
-              },
-            },
-          },
-        },
+        return tx.discount.findUnique({
+          where: { id: created.id },
+          include: DISCOUNT_PRODUCTS_INCLUDE,
+        });
       });
 
       return ResponseUtil.success(
         res,
-        discountWithProducts,
+        discount,
         "Discount created successfully",
         201,
       );
     } catch (error) {
       next(error);
+    }
+  }
+
+  // Products must exist, and a vendor may only link their own.
+  private static async assertLinkableProducts(
+    productIds: number[],
+    jwtPayload: JwtPayload,
+  ): Promise<void> {
+    const uniqueIds = [...new Set(productIds)];
+    const products = await prisma.product.findMany({
+      where: { id: { in: uniqueIds } },
+      select: { id: true, ownerId: true },
+    });
+
+    if (products.length !== uniqueIds.length) {
+      const found = new Set(products.map((p) => p.id));
+      const missing = uniqueIds.filter((id) => !found.has(id));
+      throw new BadRequestError(`Products with IDs ${missing.join(", ")} not found`);
+    }
+
+    if (
+      jwtPayload.role !== ROLES.SUPERADMIN &&
+      products.some((p) => p.ownerId !== jwtPayload.userId)
+    ) {
+      throw new BadRequestError("You can only attach discounts to your own products");
     }
   }
 
@@ -194,31 +141,50 @@ export class DiscountController {
         ];
       }
 
-      const discounts = await prisma.discount.findMany({
-        where,
-        include: {
-          products: {
-            include: {
-              product: {
-                select: {
-                  id: true,
-                  name: true,
+      const { pageNum, limitNum, skip } = parsePagination(
+        req.query.page,
+        req.query.limit,
+      );
+
+      const [discounts, total] = await Promise.all([
+        prisma.discount.findMany({
+          where,
+          include: {
+            products: {
+              include: {
+                product: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
                 },
               },
             },
-          },
-          _count: {
-            select: {
-              orders: true,
+            _count: {
+              select: {
+                orders: true,
+              },
             },
           },
-        },
-        orderBy: { createdAt: "desc" },
-      });
+          orderBy: { createdAt: "desc" },
+          skip,
+          take: limitNum,
+        }),
+        prisma.discount.count({ where }),
+      ]);
 
+      // Same list shape as orders/products, so the admin table can page.
       return ResponseUtil.success(
         res,
-        discounts,
+        {
+          data: discounts,
+          pagination: {
+            page: pageNum,
+            limit: limitNum,
+            total,
+            totalPages: Math.ceil(total / limitNum),
+          },
+        },
         "Discounts retrieved successfully",
       );
     } catch (error) {
@@ -232,7 +198,7 @@ export class DiscountController {
       const { id } = req.params;
 
       const discount = await prisma.discount.findUnique({
-        where: { id: parseInt(id) },
+        where: { id: parseId(id) },
         include: {
           products: {
             include: {
@@ -273,88 +239,71 @@ export class DiscountController {
     }
   }
 
-  // Update discount (Admin)
+  // Update discount (Admin/Vendor). Body is validated by updateDiscountSchema,
+  // so only editable fields arrive (never usedCount or ownerId).
   static async update(req: Request, res: Response, next: NextFunction) {
     try {
-      const { id } = req.params;
-      const updateData: UpdateDiscountRequest = req.body;
+      const jwtPayload = (req as any).jwtPayload as JwtPayload;
+      const discountId = parseId(req.params.id);
+      const { productIds, ...fields } = req.body as UpdateDiscountInput;
 
-      const discountId = parseInt(id);
-
-      // Check if discount exists
-      const existingDiscount = await prisma.discount.findUnique({
+      const existing = await prisma.discount.findUnique({
         where: { id: discountId },
       });
-
-      if (!existingDiscount) {
+      if (!existing) {
         throw new NotFoundError("Discount not found");
       }
 
       // A vendor may only edit their own discount (superadmin bypasses).
-      assertOwnership(
-        existingDiscount.ownerId,
-        (req as any).jwtPayload as JwtPayload,
-        DISCOUNT_FORBIDDEN,
-      );
+      assertOwnership(existing.ownerId, jwtPayload, DISCOUNT_FORBIDDEN);
 
-      // Check if code is being updated and already exists
-      if (updateData.code && updateData.code !== existingDiscount.code) {
+      if (fields.code && fields.code !== existing.code) {
         const codeExists = await prisma.discount.findUnique({
-          where: { code: updateData.code.toUpperCase() },
+          where: { code: fields.code },
         });
-
         if (codeExists) {
           throw new ConflictError("Discount code already exists");
         }
       }
 
-      // Validate dates if provided
-      if (updateData.startDate || updateData.endDate) {
-        const start = updateData.startDate
-          ? new Date(updateData.startDate)
-          : existingDiscount.startDate;
-        const end = updateData.endDate
-          ? new Date(updateData.endDate)
-          : existingDiscount.endDate;
+      // Cross-field checks against the values the discount will end up with.
+      const type = fields.type ?? existing.type;
+      const value = fields.value ?? Number(existing.value);
+      if (type === "percentage" && value > 100) {
+        throw new BadRequestError("Percentage can't exceed 100");
+      }
 
-        if (end <= start) {
-          throw new BadRequestError("End date must be after start date");
+      const start = fields.startDate ?? existing.startDate;
+      const end = fields.endDate ?? existing.endDate;
+      if (end <= start) {
+        throw new BadRequestError("End date must be after start date");
+      }
+
+      if (fields.usageLimit != null && fields.usageLimit < existing.usedCount) {
+        throw new BadRequestError(
+          `Usage limit can't be lower than the ${existing.usedCount} times this code has already been used. To stop it, set it to inactive.`,
+        );
+      }
+
+      if (productIds?.length) {
+        await DiscountController.assertLinkableProducts(productIds, jwtPayload);
+      }
+
+      const discount = await prisma.$transaction(async (tx) => {
+        await tx.discount.update({ where: { id: discountId }, data: fields });
+        // productIds, when sent, replaces the links (an empty array clears them).
+        if (productIds) {
+          await tx.productDiscount.deleteMany({ where: { discountId } });
+          if (productIds.length) {
+            await tx.productDiscount.createMany({
+              data: [...new Set(productIds)].map((productId) => ({ productId, discountId })),
+            });
+          }
         }
-      }
-
-      // Update discount
-      const dataToUpdate: any = { ...updateData };
-
-      // Never let the owner be reassigned via the request body.
-      delete dataToUpdate.ownerId;
-
-      if (updateData.code) {
-        dataToUpdate.code = updateData.code.toUpperCase();
-      }
-
-      if (updateData.startDate) {
-        dataToUpdate.startDate = new Date(updateData.startDate);
-      }
-
-      if (updateData.endDate) {
-        dataToUpdate.endDate = new Date(updateData.endDate);
-      }
-
-      const discount = await prisma.discount.update({
-        where: { id: discountId },
-        data: dataToUpdate,
-        include: {
-          products: {
-            include: {
-              product: {
-                select: {
-                  id: true,
-                  name: true,
-                },
-              },
-            },
-          },
-        },
+        return tx.discount.findUnique({
+          where: { id: discountId },
+          include: DISCOUNT_PRODUCTS_INCLUDE,
+        });
       });
 
       return ResponseUtil.success(
@@ -371,7 +320,7 @@ export class DiscountController {
   static async delete(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
-      const discountId = parseInt(id);
+      const discountId = parseId(id);
 
       // Check if discount exists
       const discount = await prisma.discount.findUnique({
@@ -402,110 +351,30 @@ export class DiscountController {
 
   // ==================== CUSTOMER ENDPOINTS ====================
 
-  // Validate and apply discount code (Customer)
+  // Validate a discount code for the checkout "Apply" button (Customer or
+  // guest). Body is validated by validateDiscountSchema. Uses the same rules
+  // as checkout (evaluateDiscount), priced from the server's product data, so
+  // a code accepted here only fails at Place Order if something changed.
   static async validateCode(req: Request, res: Response, next: NextFunction) {
     try {
-      const { code, cartSubtotal }: ApplyDiscountRequest = req.body;
+      const { code, items } = req.body as z.output<typeof validateDiscountSchema>;
+      const jwtPayload = (req as any).jwtPayload as JwtPayload | undefined;
 
-      if (!code) {
-        throw new BadRequestError("Discount code is required");
-      }
+      const result = await evaluateDiscount(
+        code,
+        await linesFromItems(items),
+        jwtPayload?.userId ?? null,
+      );
 
-      if (!cartSubtotal || cartSubtotal <= 0) {
-        throw new BadRequestError("Valid cart subtotal is required");
-      }
-
-      // Find discount by code
-      const discount = await prisma.discount.findUnique({
-        where: { code: code.toUpperCase() },
-      });
-
-      if (!discount) {
+      if (!result.ok) {
         return ResponseUtil.success(
           res,
-          {
-            valid: false,
-            message: "Invalid discount code",
-          },
+          { valid: false, message: result.message },
           "Discount code validation failed",
         );
       }
 
-      // Check if active
-      if (!discount.isActive) {
-        return ResponseUtil.success(
-          res,
-          {
-            valid: false,
-            message: "This discount code is no longer active",
-          },
-          "Discount code validation failed",
-        );
-      }
-
-      // Check if expired
-      const now = new Date();
-      if (now < discount.startDate || now > discount.endDate) {
-        return ResponseUtil.success(
-          res,
-          {
-            valid: false,
-            message: "This discount code has expired",
-          },
-          "Discount code validation failed",
-        );
-      }
-
-      // Check usage limit
-      if (discount.usageLimit && discount.usedCount >= discount.usageLimit) {
-        return ResponseUtil.success(
-          res,
-          {
-            valid: false,
-            message: "This discount code has reached its usage limit",
-          },
-          "Discount code validation failed",
-        );
-      }
-
-      // Check minimum purchase amount
-      if (
-        discount.minPurchaseAmount &&
-        cartSubtotal < Number(discount.minPurchaseAmount)
-      ) {
-        return ResponseUtil.success(
-          res,
-          {
-            valid: false,
-            message: `Minimum purchase amount of Rs ${discount.minPurchaseAmount} required`,
-          },
-          "Discount code validation failed",
-        );
-      }
-
-      // Calculate discount amount
-      let discountAmount = 0;
-
-      if (discount.type === "percentage") {
-        discountAmount = (cartSubtotal * Number(discount.value)) / 100;
-      } else {
-        // fixed
-        discountAmount = Number(discount.value);
-      }
-
-      // Apply max discount cap if set
-      if (
-        discount.maxDiscountAmount &&
-        discountAmount > Number(discount.maxDiscountAmount)
-      ) {
-        discountAmount = Number(discount.maxDiscountAmount);
-      }
-
-      // Discount cannot exceed cart subtotal
-      if (discountAmount > cartSubtotal) {
-        discountAmount = cartSubtotal;
-      }
-
+      const { discount, amount, eligibleSubtotal } = result;
       return ResponseUtil.success(
         res,
         {
@@ -516,7 +385,9 @@ export class DiscountController {
             code: discount.code,
             type: discount.type,
             value: Number(discount.value),
-            discountAmount: Math.round(discountAmount * 100) / 100, // Round to 2 decimals
+            discountAmount: amount,
+            // Lets the checkout say "applies to some items" when it's partial.
+            eligibleSubtotal,
           },
         },
         "Discount code is valid",

@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../config/database.config";
 import { ResponseUtil } from "../utils/response.util";
+import { parseId } from "../utils/parseId.util";
 import { BadRequestError, NotFoundError } from "../utils/customError.util";
 import { JwtPayload } from "../types/auth.types";
 
@@ -127,7 +128,7 @@ export class WishlistController {
       const { id } = req.params;
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
 
-      const wishlistItemId = parseInt(id);
+      const wishlistItemId = parseId(id);
 
       // Check if wishlist item exists and belongs to user
       const wishlistItem = await prisma.wishlistItem.findUnique({
@@ -278,7 +279,7 @@ export class WishlistController {
       const { quantity = 1, colorId } = req.body;
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
 
-      const wishlistItemId = parseInt(id);
+      const wishlistItemId = parseId(id);
 
       // Get wishlist item
       const wishlistItem = await prisma.wishlistItem.findUnique({

@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../config/database.config";
 import { ResponseUtil } from "../utils/response.util";
+import { parseId } from "../utils/parseId.util";
 import { NotFoundError } from "../utils/customError.util";
 import { JwtPayload } from "../types/auth.types";
 
@@ -48,7 +49,7 @@ export class AddressController {
   static async update(req: Request, res: Response, next: NextFunction) {
     try {
       const userId = ((req as any).jwtPayload as JwtPayload).userId;
-      const id = parseInt(req.params.id);
+      const id = parseId(req.params.id);
       const existing = await prisma.address.findFirst({ where: { id, userId } });
       if (!existing) throw new NotFoundError("Address not found");
 
@@ -72,7 +73,7 @@ export class AddressController {
   static async remove(req: Request, res: Response, next: NextFunction) {
     try {
       const userId = ((req as any).jwtPayload as JwtPayload).userId;
-      const id = parseInt(req.params.id);
+      const id = parseId(req.params.id);
       const existing = await prisma.address.findFirst({ where: { id, userId } });
       if (!existing) throw new NotFoundError("Address not found");
       await prisma.address.delete({ where: { id } });

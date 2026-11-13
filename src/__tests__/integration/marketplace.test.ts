@@ -14,7 +14,9 @@ const shippingInfo = {
   phone: "9800000000",
   email: "it-buyer@example.com",
   addressLine1: "1 Test Street",
+  landmark: "Near the test chowk",
   city: "Kathmandu",
+  province: "Bagmati Province",
   postalCode: "44600",
 };
 

@@ -1,10 +1,13 @@
 import { Request, Response, NextFunction } from "express";
+import { MulterError } from "multer";
 import { logger } from "../utils/logger.util";
+import { multerErrorMessage } from "./upload.middleware";
 
 interface CustomError extends Error {
   statusCode?: number;
   errors?: any;
   code?: string; // Prisma error code, when present
+  errorCode?: string; // our own machine-readable code, sent to the client
 }
 
 // Prisma transient contention errors — the request never did any work and can
@@ -22,7 +25,11 @@ export const errorHandler = (
   let statusCode = err.statusCode || 500;
   let message = err.message || "Internal Server Error";
 
-  if (err.code && TRANSIENT_PRISMA_CODES.has(err.code)) {
+  if (err instanceof MulterError) {
+    // Upload limits (file too large, wrong field name): the client's mistake.
+    statusCode = 400;
+    message = multerErrorMessage(err.code);
+  } else if (err.code && TRANSIENT_PRISMA_CODES.has(err.code)) {
     statusCode = 503;
     message = "The server is busy right now. Please try again in a moment.";
     res.setHeader("Retry-After", "2");
@@ -48,6 +55,7 @@ export const errorHandler = (
   res.status(statusCode).json({
     status: "error",
     message,
+    ...(err.errorCode && { code: err.errorCode }),
     requestId,
     ...(process.env.NODE_ENV === "development" && {
       errors: err.errors,

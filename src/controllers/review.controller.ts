@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../config/database.config";
 import { ResponseUtil } from "../utils/response.util";
+import { parseId, parseIntParam } from "../utils/parseId.util";
 import {
   BadRequestError,
   NotFoundError,
@@ -153,7 +154,7 @@ export class ReviewController {
 
       // Load the initial review
       const initialReview = await prisma.review.findUnique({
-        where: { id: parseInt(id) },
+        where: { id: parseId(id) },
         include: { followupReview: true } as any,
       }) as any;
 
@@ -219,7 +220,7 @@ export class ReviewController {
   // however many orders they have. Also says whether they already have.
   static async getEligibility(req: Request, res: Response, next: NextFunction) {
     try {
-      const productId = parseInt(req.params.productId as string, 10);
+      const productId = parseId(req.params.productId, "product ID");
       if (!Number.isFinite(productId)) {
         throw new BadRequestError("Invalid product ID");
       }
@@ -307,7 +308,7 @@ export class ReviewController {
       const updateData: UpdateReviewRequest = req.body;
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
 
-      const reviewId = parseInt(id);
+      const reviewId = parseId(id);
 
       // Check if review exists and belongs to user
       const existingReview = await prisma.review.findUnique({
@@ -379,7 +380,7 @@ export class ReviewController {
       const { id } = req.params;
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
 
-      const reviewId = parseInt(id);
+      const reviewId = parseId(id);
 
       // Check if review exists and belongs to user
       const review = await prisma.review.findUnique({
@@ -415,13 +416,13 @@ export class ReviewController {
 
       // Only fetch initial reviews — follow-ups are nested inside them
       const where: any = {
-        productId: parseInt(productId),
+        productId: parseId(productId, "product ID"),
         isApproved: true,
         reviewType: "initial",
       };
 
       if (rating) {
-        where.rating = parseInt(rating as string);
+        where.rating = parseIntParam(rating, "rating");
       }
 
       // Get reviews with approved follow-ups nested
@@ -464,7 +465,7 @@ export class ReviewController {
 
       // Calculate rating summary
       const allReviews = await prisma.review.findMany({
-        where: { productId: parseInt(productId), isApproved: true },
+        where: { productId: parseId(productId, "product ID"), isApproved: true },
         select: { rating: true },
       });
 
@@ -500,7 +501,7 @@ export class ReviewController {
       const { id } = req.params;
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
 
-      const reviewId = parseInt(id);
+      const reviewId = parseId(id);
 
       // Check if review exists
       const review = await prisma.review.findUnique({
@@ -561,7 +562,7 @@ export class ReviewController {
       const { id } = req.params;
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
 
-      const reviewId = parseInt(id);
+      const reviewId = parseId(id);
 
       // Check if vote exists
       const vote = await prisma.reviewHelpful.findUnique({
@@ -631,7 +632,7 @@ export class ReviewController {
       }
 
       if (rating) {
-        where.rating = parseInt(rating as string);
+        where.rating = parseIntParam(rating, "rating");
       }
 
       if (search) {
@@ -715,7 +716,7 @@ export class ReviewController {
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
       const isSuper = jwtPayload.role === ROLES.SUPERADMIN;
 
-      const reviewId = parseInt(id);
+      const reviewId = parseId(id);
 
       if (isApproved === undefined) {
         throw new BadRequestError("isApproved field is required");
@@ -781,7 +782,7 @@ export class ReviewController {
   static async adminDelete(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
-      const reviewId = parseInt(id);
+      const reviewId = parseId(id);
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
       const isSuper = jwtPayload.role === ROLES.SUPERADMIN;
 

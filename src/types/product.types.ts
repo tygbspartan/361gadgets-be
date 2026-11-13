@@ -1,21 +1,32 @@
 // ==================== CATEGORY TYPES ====================
 
+export interface CategoryFaq {
+  question: string;
+  answer: string;
+}
+
+// Shapes after createCategorySchema / updateCategorySchema (null clears a field).
 export interface CreateCategoryRequest {
   name: string;
   slug?: string;
-  description?: string;
-  seoDescription?: string;
-  parentId?: number;
+  description?: string | null;
+  seoDescription?: string | null;
+  seoContent?: string | null;
+  faqs?: CategoryFaq[] | null;
+  parentId?: number | null;
   level: number; // 1, 2, or 3
   displayOrder?: number;
+  isActive?: boolean;
 }
 
 export interface UpdateCategoryRequest {
   name?: string;
   slug?: string;
-  description?: string;
-  seoDescription?: string;
-  parentId?: number;
+  description?: string | null;
+  seoDescription?: string | null;
+  seoContent?: string | null;
+  faqs?: CategoryFaq[] | null;
+  parentId?: number | null;
   displayOrder?: number;
   isActive?: boolean;
 }
@@ -118,6 +129,7 @@ export interface CreateProductRequest {
   colors?: ProductColorRequest[];
   metaTitle?: string;
   metaDescription?: string;
+  faqs?: CategoryFaq[] | null; // optional product FAQ
   images?: {
     imageUrl: string;
     altText?: string;
@@ -148,6 +160,7 @@ export interface UpdateProductRequest {
   colors?: ProductColorRequest[];
   metaTitle?: string;
   metaDescription?: string;
+  faqs?: CategoryFaq[] | null; // optional product FAQ
   images?: {
     imageUrl: string;
     altText?: string;

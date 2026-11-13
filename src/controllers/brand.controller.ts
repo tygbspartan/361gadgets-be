@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../config/database.config";
 import { ResponseUtil } from "../utils/response.util";
+import { parseId } from "../utils/parseId.util";
 import { SlugUtil } from "../utils/slug.util";
 import {
   BadRequestError,
@@ -293,7 +294,7 @@ export class BrandController {
         if (ownerId === "null") {
           where.ownerId = null;
         } else if (ownerId !== undefined && ownerId !== "") {
-          where.ownerId = parseInt(ownerId as string);
+          where.ownerId = parseId(ownerId, "ownerId");
         }
       } else {
         where.ownerId = jwtPayload.userId;
@@ -333,7 +334,7 @@ export class BrandController {
       const { id } = req.params;
 
       const brand = await prisma.brand.findUnique({
-        where: { id: parseInt(id) },
+        where: { id: parseId(id) },
         include: {
           _count: {
             select: {
@@ -361,7 +362,7 @@ export class BrandController {
 
       // Check if brand exists
       const existingBrand = await prisma.brand.findUnique({
-        where: { id: parseInt(id) },
+        where: { id: parseId(id) },
       });
 
       if (!existingBrand) {
@@ -390,7 +391,7 @@ export class BrandController {
         await StorageService.deleteImage(existingBrand.logoUrl);
       }
 
-      const brandId = parseInt(id);
+      const brandId = parseId(id);
       const ownerChanging =
         updateData.ownerId !== undefined &&
         (updateData.ownerId ?? null) !== existingBrand.ownerId;
@@ -434,7 +435,7 @@ export class BrandController {
 
       // Check if brand exists
       const brand = await prisma.brand.findUnique({
-        where: { id: parseInt(id) },
+        where: { id: parseId(id) },
         include: {
           _count: {
             select: {
@@ -460,7 +461,7 @@ export class BrandController {
         await StorageService.deleteImage(brand.logoUrl);
       }
 
-      await prisma.brand.delete({ where: { id: parseInt(id) } });
+      await prisma.brand.delete({ where: { id: parseId(id) } });
 
       await CacheService.invalidatePattern("brands:*");
       return ResponseUtil.success(res, null, "Brand deleted successfully");
@@ -473,7 +474,7 @@ export class BrandController {
   static async uploadLogo(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
-      const brandId = parseInt(id);
+      const brandId = parseId(id);
       const file = req.file;
 
       if (!file) {
@@ -508,7 +509,7 @@ export class BrandController {
   static async deleteLogo(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
-      const brandId = parseInt(id);
+      const brandId = parseId(id);
 
       const brand = await prisma.brand.findUnique({ where: { id: brandId } });
 

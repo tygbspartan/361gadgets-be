@@ -5,11 +5,20 @@ import { BadRequestError } from "../utils/customError.util";
 import { EmailService } from "../services/email.service";
 import { JwtPayload } from "../types/auth.types";
 import { config } from "../config/env.config";
+import {
+  button,
+  detailList,
+  emailLayout,
+  esc,
+  panel,
+  paragraph,
+} from "../templates/emailLayout";
 
 const VALID_TYPES = ["brand", "category"] as const;
 type RequestType = (typeof VALID_TYPES)[number];
 
-// Simple notification email for a vendor's catalog request.
+// Notification email to the platform admin for a vendor's catalog request.
+// Every value here is vendor-supplied, so it's escaped before interpolation.
 function generateCatalogRequestEmail(input: {
   vendorLabel: string;
   vendorEmail: string;
@@ -20,53 +29,31 @@ function generateCatalogRequestEmail(input: {
   note?: string;
 }): string {
   const rows: [string, string][] = [
-    ["Requested by", `${input.vendorLabel} (${input.vendorEmail}, vendor #${input.vendorId})`],
-    ["Type", input.type],
-    ["Requested name", input.name],
+    ["Type", input.type === "brand" ? "Brand" : "Category"],
+    ["Requested name", `<strong>${esc(input.name)}</strong>`],
   ];
   if (input.type === "category" && input.parentName) {
-    rows.push(["Parent category", input.parentName]);
+    rows.push(["Parent category", esc(input.parentName)]);
   }
-  if (input.note) rows.push(["Note", input.note]);
+  rows.push([
+    "Requested by",
+    `${esc(input.vendorLabel)}<br /><a href="mailto:${esc(input.vendorEmail)}" style="color:#111111;">${esc(input.vendorEmail)}</a> &middot; vendor #${input.vendorId}`,
+  ]);
 
-  const rowsHtml = rows
-    .map(
-      ([label, value]) => `
-      <tr>
-        <td style="padding:8px 12px;color:#6b7280;font-size:13px;white-space:nowrap;vertical-align:top;">${label}</td>
-        <td style="padding:8px 12px;color:#111827;font-size:14px;font-weight:600;">${value}</td>
-      </tr>`,
-    )
-    .join("");
+  const adminPath = input.type === "brand" ? "brands" : "categories";
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0"/></head>
-<body style="margin:0;padding:0;background-color:#f4f7f6;font-family:'Segoe UI',Arial,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f7f6;padding:40px 0;">
-    <tr><td align="center">
-      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
-        <tr><td align="center" style="background:linear-gradient(135deg,#16a34a,#15803d);padding:32px 40px;">
-          <h1 style="margin:0;color:#fff;font-size:24px;font-weight:700;">361 Gadgets</h1>
-          <p style="margin:6px 0 0;color:#bbf7d0;font-size:12px;letter-spacing:1px;text-transform:uppercase;">Catalog Request</p>
-        </td></tr>
-        <tr><td style="padding:36px 40px 28px;">
-          <h2 style="margin:0 0 8px;color:#111827;font-size:20px;">New ${input.type} requested</h2>
-          <p style="margin:0 0 24px;color:#6b7280;font-size:14px;line-height:1.7;">
-            A vendor has requested that you create a new ${input.type} in the catalog.
-          </p>
-          <table width="100%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;">
-            ${rowsHtml}
-          </table>
-          <p style="margin:24px 0 0;color:#9ca3af;font-size:12px;">
-            Review the request and, if approved, create the ${input.type} from the admin panel.
-          </p>
-        </td></tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`;
+  return emailLayout({
+    preheader: `${input.vendorLabel} requested a new ${input.type}: ${input.name}.`,
+    eyebrow: "Catalog request",
+    title: `New ${input.type} requested`,
+    body: `
+      ${paragraph(`A vendor has asked you to add a ${input.type} to the catalog.`, 20)}
+      ${panel("Request", detailList(rows))}
+      ${input.note ? panel("Vendor note", paragraph(esc(input.note), 0)) : ""}
+      ${button(`Open ${adminPath}`, `${config.clientUrl}/admin/${adminPath}`)}
+    `,
+    footnote: "If you approve it, create the entry from the admin panel. The vendor isn&rsquo;t notified automatically.",
+  });
 }
 
 export class CatalogRequestController {

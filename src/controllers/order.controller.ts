@@ -7,30 +7,78 @@ import { logger } from "../utils/logger.util";
 import { Request, Response, NextFunction } from "express";
 import prisma from "../config/database.config";
 import { ResponseUtil } from "../utils/response.util";
+import { parseId } from "../utils/parseId.util";
 import {
   BadRequestError,
   NotFoundError,
   ConflictError,
+  DiscountError,
 } from "../utils/customError.util";
+import { evaluateDiscount } from "../services/discount.service";
 import {
   CheckoutRequest,
-  SHIPPING_CONFIG,
   UpdateOrderStatusRequest,
   UpdatePaymentStatusRequest,
-  calculateShippingCost,
 } from "../types/order.types";
+import { isInsideValley } from "../constants/nepal.constants";
 import { JwtPayload } from "../types/auth.types";
 import { ROLES } from "../constants/roles.constants";
 import {
+  ORDER_STATUS,
   PAYMENT_METHODS,
   requiresTransactionNumber,
 } from "../constants/payment.constants";
 import {
   generateCustomerOrderEmail,
   generateAdminOrderNotification,
+  type OrderEmailData,
 } from "../templates/orderEmails";
 import { config } from "../config/env.config";
 import { parsePagination } from "../utils/pagination.util";
+
+/*
+ * What a vendor sees of an order. The platform delivers, so vendors need to
+ * know what to prepare, not who it goes to: no customer name, phone, email,
+ * address, account, notes or payment reference, and no order-wide totals
+ * (those include other vendors' items and the platform's shipping).
+ * Built as a whitelist so new Order columns stay hidden by default.
+ */
+function toVendorOrderView<
+  O extends {
+    id: number;
+    orderNumber: string;
+    status: string;
+    paymentStatus: string;
+    paymentMethod: string;
+    shippingCity: string;
+    shippingProvince: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  },
+  I extends { subtotal: unknown; vendorDiscount: unknown },
+>(order: O, vendorItems: I[]) {
+  const sum = (pick: (item: I) => unknown) =>
+    vendorItems.reduce((total, item) => total + Number(pick(item)), 0);
+  const subtotal = sum((item) => item.subtotal);
+  // Only the vendor's own discount codes; platform codes don't touch this.
+  const discount = sum((item) => item.vendorDiscount);
+  return {
+    id: order.id,
+    orderNumber: order.orderNumber,
+    status: order.status,
+    paymentStatus: order.paymentStatus,
+    paymentMethod: order.paymentMethod,
+    // Delivery area only, for regional demand.
+    shippingCity: order.shippingCity,
+    shippingProvince: order.shippingProvince,
+    createdAt: order.createdAt,
+    updatedAt: order.updatedAt,
+    items: vendorItems,
+    vendorSubtotal: subtotal.toFixed(2),
+    vendorDiscount: discount.toFixed(2),
+    vendorNet: (subtotal - discount).toFixed(2),
+  };
+}
 
 export class OrderController {
   // Checkout - Create order from cart
@@ -104,6 +152,21 @@ export class OrderController {
         if (!transactionNumber || transactionNumber.trim() === "") {
           throw new BadRequestError(
             "Transaction number is required for online payments (eSewa, Khalti, Bank Transfer)",
+          );
+        }
+
+        // One payment can only pay for one order. Cancelled orders free their
+        // number up again (e.g. the customer re-orders after a cancellation).
+        const reused = await prisma.order.findFirst({
+          where: {
+            transactionNumber: { equals: transactionNumber.trim(), mode: "insensitive" },
+            status: { not: ORDER_STATUS.CANCELLED },
+          },
+          select: { id: true },
+        });
+        if (reused) {
+          throw new ConflictError(
+            "This transaction number has already been used for another order. If you think this is a mistake, please contact us.",
           );
         }
       }
@@ -267,92 +330,44 @@ export class OrderController {
       if (subtotal >= Number(settings.freeShippingThreshold)) {
         shippingCost = 0;
       } else {
-        const city = shippingInfo.city.toLowerCase().trim();
-        const valleyCities = [
-          "kathmandu",
-          "lalitpur",
-          "bhaktapur",
-          "kirtipur",
-          "madhyapur thimi",
-          "thimi",
-        ];
-
-        const isInsideValley = valleyCities.some(
-          (valleyCity) =>
-            city.includes(valleyCity) || valleyCity.includes(city),
-        );
-
-        shippingCost = isInsideValley
+        // city is a district name, already checked against the list (schema).
+        shippingCost = isInsideValley(shippingInfo.city)
           ? Number(settings.shippingInsideValley)
           : Number(settings.shippingOutsideValley);
       }
 
-      // ✅ NEW: Apply discount if code provided
+      // Apply the discount code, if any. A code that no longer applies (expired,
+      // limit reached, already used...) rejects the order rather than being
+      // dropped, so the customer is never charged more than the total they saw.
       let discount = 0;
       let discountId: number | null = null;
       let discountCodeUsed: string | null = null;
       let discountUsageLimit: number | null = null;
       let discountOncePerUser = false;
+      // Per line (same order as lineItems): the vendor-paid part of the
+      // discount, stored on each order item for vendor earnings.
+      let vendorDiscounts: number[] = lineItems.map(() => 0);
 
       if (discountCode) {
-        const discountRecord = await prisma.discount.findUnique({
-          where: { code: discountCode.toUpperCase() },
-        });
-
-        if (discountRecord) {
-          const now = new Date();
-
-          // once-per-user codes: reject if this customer already redeemed it.
-          const alreadyRedeemed =
-            discountRecord.oncePerUser && jwtPayload
-              ? !!(await prisma.discountRedemption.findUnique({
-                  where: {
-                    discountId_userId: {
-                      discountId: discountRecord.id,
-                      userId: jwtPayload.userId,
-                    },
-                  },
-                }))
-              : false;
-
-          // Validate discount
-          const isValid =
-            discountRecord.isActive &&
-            !alreadyRedeemed &&
-            now >= discountRecord.startDate &&
-            now <= discountRecord.endDate &&
-            (!discountRecord.usageLimit ||
-              discountRecord.usedCount < discountRecord.usageLimit) &&
-            (!discountRecord.minPurchaseAmount ||
-              subtotal >= Number(discountRecord.minPurchaseAmount));
-
-          if (isValid) {
-            // Calculate discount
-            if (discountRecord.type === "percentage") {
-              discount = (subtotal * Number(discountRecord.value)) / 100;
-            } else {
-              discount = Number(discountRecord.value);
-            }
-
-            // Apply max discount cap
-            if (
-              discountRecord.maxDiscountAmount &&
-              discount > Number(discountRecord.maxDiscountAmount)
-            ) {
-              discount = Number(discountRecord.maxDiscountAmount);
-            }
-
-            // Discount cannot exceed subtotal
-            if (discount > subtotal) {
-              discount = subtotal;
-            }
-
-            discountId = discountRecord.id;
-            discountCodeUsed = discountRecord.code;
-            discountUsageLimit = discountRecord.usageLimit ?? null;
-            discountOncePerUser = discountRecord.oncePerUser;
-          }
+        const result = await evaluateDiscount(
+          discountCode,
+          lineItems.map((item) => ({
+            productId: item.product.id,
+            ownerId: item.product.ownerId ?? null,
+            subtotal: Number(item.product.price) * item.quantity,
+          })),
+          jwtPayload?.userId ?? null,
+        );
+        if (!result.ok) {
+          throw new DiscountError(result.message);
         }
+
+        discount = result.amount;
+        discountId = result.discount.id;
+        discountCodeUsed = result.discount.code;
+        discountUsageLimit = result.discount.usageLimit || null;
+        discountOncePerUser = result.discount.oncePerUser;
+        if (result.vendorFunded) vendorDiscounts = result.allocations;
       }
 
       const tax = 0;
@@ -454,7 +469,7 @@ export class OrderController {
         // product at time of order). Batching keeps the transaction — and the
         // connection it holds — as short as possible under concurrency.
         await tx.orderItem.createMany({
-          data: lineItems.map((item) => ({
+          data: lineItems.map((item, i) => ({
             orderId: newOrder.id,
             productId: item.product.id,
             productName: item.product.name,
@@ -465,6 +480,7 @@ export class OrderController {
             price: item.product.price,
             quantity: item.quantity,
             subtotal: Number(item.product.price) * item.quantity,
+            vendorDiscount: vendorDiscounts[i],
           })),
         });
 
@@ -488,14 +504,16 @@ export class OrderController {
             data: { usedCount: { increment: 1 } },
           });
           if (discDec.count === 0) {
-            throw new ConflictError(
+            throw new DiscountError(
               "This discount code has reached its usage limit.",
             );
           }
 
-          // Record the per-user redemption (idempotent — ignores a duplicate).
+          // Record the per-user redemption. The unique (discount, user) pair is
+          // the binding once-per-customer check: if a parallel order got there
+          // first, nothing is inserted and this order is rolled back.
           if (discountOncePerUser && jwtPayload) {
-            await tx.discountRedemption.createMany({
+            const redeemed = await tx.discountRedemption.createMany({
               data: {
                 discountId,
                 userId: jwtPayload.userId,
@@ -503,6 +521,9 @@ export class OrderController {
               },
               skipDuplicates: true,
             });
+            if (redeemed.count === 0) {
+              throw new DiscountError("You've already used this discount code.");
+            }
           }
         }
 
@@ -552,45 +573,55 @@ export class OrderController {
             );
           }
         }
+        // Lost a race on the same transaction number (unique among live orders).
+        if (e?.code === "P2002" && String(e?.meta?.target ?? "").includes("transaction_number")) {
+          throw new ConflictError(
+            "This transaction number has already been used for another order. If you think this is a mistake, please contact us.",
+          );
+        }
         throw e;
       }
       // Send emails in background — don't block the response
       if (order) {
-        const orderDate = new Date(order.createdAt).toLocaleDateString("en-US", {
-          year: "numeric",
-          month: "long",
+        // Shown in the store's local time; the server may run in UTC.
+        const orderDate = new Date(order.createdAt).toLocaleString("en-GB", {
           day: "numeric",
-          hour: "2-digit",
+          month: "short",
+          year: "numeric",
+          hour: "numeric",
           minute: "2-digit",
+          timeZone: "Asia/Kathmandu",
         });
 
-        const shippingAddress = [
-          order.shippingFullName,
+        const addressLines = [
           order.shippingAddressLine1,
           order.shippingAddressLine2,
-          `${order.shippingCity}, ${order.shippingProvince} ${order.shippingPostalCode ?? ""}`,
-          `Phone: ${order.shippingPhone}`,
-        ]
-          .filter(Boolean)
-          .join("\n");
+          order.shippingLandmark,
+          [order.shippingCity, order.shippingProvince].filter(Boolean).join(", "),
+          [order.shippingPostalCode, order.shippingCountry].filter(Boolean).join(", "),
+        ].filter((line): line is string => !!line);
 
-        const orderItems = order.items.map((item) => ({
-          name: item.productName,
-          quantity: item.quantity,
-          price: parseFloat(item.price.toString()),
-        }));
-
-        const emailData = {
-          customerName: order.shippingFullName,
+        const emailData: OrderEmailData = {
+          orderId: order.id,
           orderNumber: order.orderNumber,
           orderDate,
-          items: orderItems,
+          customerName: order.shippingFullName,
+          customerEmail: order.shippingEmail,
+          customerPhone: order.shippingPhone,
+          items: order.items.map((item) => ({
+            name: item.productName,
+            quantity: item.quantity,
+            price: parseFloat(item.price.toString()),
+          })),
           subtotal: parseFloat(order.subtotal.toString()),
           shippingCost: parseFloat(order.shippingCost.toString()),
           discount: parseFloat(order.discount.toString()),
+          discountCode: order.discountCode,
           total: parseFloat(order.total.toString()),
-          paymentMethod: order.paymentMethod || "Cash on Delivery",
-          shippingAddress,
+          paymentMethod: order.paymentMethod,
+          transactionNumber: order.transactionNumber,
+          customerNote: order.customerNote,
+          addressLines,
         };
 
         // Fire-and-forget both emails — order is saved, no reason to block customer
@@ -605,11 +636,7 @@ export class OrderController {
         void EmailService.sendEmail({
           to: config.adminNotificationEmail,
           subject: `New Order Received - ${order.orderNumber}`,
-          html: generateAdminOrderNotification({
-            ...emailData,
-            customerEmail: order.shippingEmail,
-            customerPhone: order.shippingPhone,
-          }),
+          html: generateAdminOrderNotification(emailData),
         }).catch((err) =>
           logger.warn({ err: err?.message }, "admin order email failed"),
         );
@@ -729,11 +756,12 @@ export class OrderController {
           throw new NotFoundError("Order not found");
         }
       } else {
-        // Guest order — allow lookup by order number. If an email is provided,
-        // require it to match the order's shipping email for a bit more safety.
+        // Guest order — the order number alone isn't a secret (it appears in
+        // emails, screenshots, support chats), so the shipping email must match
+        // too. Without it anyone could read the guest's name, phone and address.
         if (
-          email &&
-          (email as string).toLowerCase() !== order.shippingEmail.toLowerCase()
+          typeof email !== "string" ||
+          email.trim().toLowerCase() !== order.shippingEmail.toLowerCase()
         ) {
           throw new NotFoundError("Order not found");
         }
@@ -769,7 +797,11 @@ export class OrderController {
         where.paymentStatus = paymentStatus;
       }
 
-      if (search) {
+      // Vendors can search by order number only: matching on customer name or
+      // phone would let them look up whether someone is a customer.
+      if (search && !isSuper) {
+        where.orderNumber = { contains: search as string, mode: "insensitive" };
+      } else if (search) {
         where.OR = [
           { orderNumber: { contains: search as string, mode: "insensitive" } },
           {
@@ -822,15 +854,11 @@ export class OrderController {
         prisma.order.count({ where }),
       ]);
 
-      // For vendors, attach their share of each order (sum of their item subtotals).
+      // Vendors get the trimmed view (their items, their share, no customer
+      // contact). The where above already limited items to theirs.
       const data = isSuper
         ? orders
-        : orders.map((order) => ({
-            ...order,
-            vendorSubtotal: order.items
-              .reduce((sum, item) => sum + Number(item.subtotal), 0)
-              .toFixed(2),
-          }));
+        : orders.map((order) => toVendorOrderView(order, order.items));
 
       return ResponseUtil.success(
         res,
@@ -855,7 +883,7 @@ export class OrderController {
   static async getOrderById(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
-      const orderId = parseInt(id);
+      const orderId = parseId(id);
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
       const isSuper = jwtPayload.role === ROLES.SUPERADMIN;
       const ownerId = jwtPayload.userId;
@@ -897,13 +925,9 @@ export class OrderController {
         throw new NotFoundError("Order not found");
       }
 
-      const vendorSubtotal = vendorItems
-        .reduce((sum, item) => sum + Number(item.subtotal), 0)
-        .toFixed(2);
-
       return ResponseUtil.success(
         res,
-        { ...order, items: vendorItems, vendorSubtotal },
+        toVendorOrderView(order, vendorItems),
         "Order retrieved successfully",
       );
     } catch (error) {
@@ -921,7 +945,7 @@ export class OrderController {
       const { id } = req.params;
       const { status, adminNote }: UpdateOrderStatusRequest = req.body;
 
-      const orderId = parseInt(id);
+      const orderId = parseId(id);
 
       if (!status) {
         throw new BadRequestError("Status is required");
@@ -986,14 +1010,12 @@ export class OrderController {
           }
 
           // 2. Decrement discount usage count (if discount was used)
+          // (once-per-customer redemptions are kept: a cancelled order still
+          // counts as that customer having used the code). Never below 0.
           if (existingOrder.discountId) {
-            await tx.discount.update({
-              where: { id: existingOrder.discountId },
-              data: {
-                usedCount: {
-                  decrement: 1,
-                },
-              },
+            await tx.discount.updateMany({
+              where: { id: existingOrder.discountId, usedCount: { gt: 0 } },
+              data: { usedCount: { decrement: 1 } },
             });
           }
 
@@ -1059,7 +1081,7 @@ export class OrderController {
       const { id } = req.params;
       const { paymentStatus, adminNote }: UpdatePaymentStatusRequest = req.body;
 
-      const orderId = parseInt(id);
+      const orderId = parseId(id);
 
       if (!paymentStatus) {
         throw new BadRequestError("Payment status is required");
@@ -1107,7 +1129,7 @@ export class OrderController {
   // Cancel own order (Customer). Only before it ships; restores stock/discount.
   static async cancelOrder(req: Request, res: Response, next: NextFunction) {
     try {
-      const orderId = parseInt(req.params.id);
+      const orderId = parseId(req.params.id);
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
       const { reason } = req.body as { reason?: string };
 
@@ -1141,9 +1163,10 @@ export class OrderController {
           }
         }
         // Return the discount to the pool.
+        // The once-per-customer redemption is kept on purpose. Never below 0.
         if (order.discountId) {
-          await tx.discount.update({
-            where: { id: order.discountId },
+          await tx.discount.updateMany({
+            where: { id: order.discountId, usedCount: { gt: 0 } },
             data: { usedCount: { decrement: 1 } },
           });
         }
@@ -1176,7 +1199,7 @@ export class OrderController {
   // manual refund (no payment provider) and marks the order refunded.
   static async refundOrder(req: Request, res: Response, next: NextFunction) {
     try {
-      const orderId = parseInt(req.params.id);
+      const orderId = parseId(req.params.id);
       const jwtPayload = (req as any).jwtPayload as JwtPayload;
       const { reason, amount } = req.body as {
         reason: string;

@@ -1,26 +1,49 @@
-import rateLimit from "express-rate-limit";
+import type { Request } from "express";
+import rateLimit, {
+  ipKeyGenerator,
+  type Options,
+  type RateLimitInfo,
+} from "express-rate-limit";
 import { RedisStore } from "rate-limit-redis";
 import { getRedisClient } from "../config/redis.config";
 
 // Shared Redis-backed store so limits hold across instances. Falls back to the
 // in-memory store when REDIS_URL is not configured.
-function makeStore() {
+// Each limiter needs its own key prefix: with the shared default ("rl:") every
+// limiter counted against the same per-IP total.
+function makeStore(prefix: string) {
   const client = getRedisClient();
   if (!client) return undefined;
   return new RedisStore({
+    prefix: `rl:${prefix}:`,
     // ioredis: forward the raw command.
     sendCommand: (...args: string[]) => (client as any).call(...args),
   });
 }
 
-function makeLimiter(windowMs: number, limit: number, message: string) {
+function makeLimiter(
+  name: string,
+  windowMs: number,
+  limit: number,
+  message: string,
+  keyGenerator?: Options["keyGenerator"],
+) {
   return rateLimit({
     windowMs,
     limit,
     standardHeaders: "draft-7",
     legacyHeaders: false,
-    store: makeStore(),
-    message: { status: "error", message },
+    store: makeStore(name),
+    ...(keyGenerator && { keyGenerator }),
+    // retryAfter (seconds) lets the client count down / re-enable a button.
+    message: (req: Request & { rateLimit?: RateLimitInfo }) => {
+      const reset = req.rateLimit?.resetTime?.getTime();
+      return {
+        status: "error",
+        message,
+        retryAfter: reset ? Math.max(1, Math.ceil((reset - Date.now()) / 1000)) : undefined,
+      };
+    },
     // Disable rate limiting under the test runner — suites fire many requests
     // in quick succession and would otherwise trip the limits.
     skip: () => process.env.NODE_ENV === "test",
@@ -29,6 +52,7 @@ function makeLimiter(windowMs: number, limit: number, message: string) {
 
 // Sensitive auth endpoints — brute-force protection (per IP).
 export const authLimiter = makeLimiter(
+  "auth",
   15 * 60 * 1000,
   15,
   "Too many attempts. Please try again in a few minutes.",
@@ -36,6 +60,7 @@ export const authLimiter = makeLimiter(
 
 // Checkout — guards against runaway/duplicate order attempts (per IP).
 export const checkoutLimiter = makeLimiter(
+  "checkout",
   60 * 1000,
   12,
   "Too many checkout attempts. Please slow down.",
@@ -43,9 +68,25 @@ export const checkoutLimiter = makeLimiter(
 
 // Public writes (reviews, catalog requests).
 export const writeLimiter = makeLimiter(
+  "write",
   60 * 1000,
   20,
   "Too many requests. Please slow down.",
+);
+
+// Discount code checks — per account for logged-in customers (people on a
+// shared network don't block each other), per IP for guests. Runs after
+// `optionalAuthenticate`. Stops bulk guessing; 5 a minute is plenty for
+// someone trying real codes.
+export const discountCheckLimiter = makeLimiter(
+  "discount",
+  60 * 1000,
+  5,
+  "Too many discount code attempts. Please wait a minute and try again.",
+  (req) => {
+    const userId = (req as any).jwtPayload?.userId;
+    return userId ? `user:${userId}` : `ip:${ipKeyGenerator(req.ip ?? "")}`;
+  },
 );
 
 // ── Per-account failed-login lockout (simple, non-progressive) ──────────────

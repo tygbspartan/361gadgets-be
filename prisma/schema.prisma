@@ -91,6 +91,11 @@ model Category {
 
   // SEO: long-form intro copy shown above the product grid on the category page.
   seoDescription String? @map("seo_description") @db.Text
+  // SEO, optional: long-form copy shown under the product grid (paragraphs
+  // separated by a blank line; a line starting "## " is a subheading) and an
+  // FAQ list [{ question, answer }]. Shown on page 1 of the category only.
+  seoContent String? @map("seo_content") @db.Text
+  faqs       Json?
 
   // THIS IS HOW 3-LEVEL WORKS:
   parentId Int? @map("parent_id") // NULL for Level 1, points to parent for Level 2 & 3
@@ -185,6 +190,8 @@ model Product {
   // SEO
   metaTitle       String? @map("meta_title")
   metaDescription String? @map("meta_description")
+  // Optional FAQ shown on the product page: [{ question, answer }].
+  faqs            Json?
 
   // Status & Features
   isActive        Boolean @default(true) @map("is_active")
@@ -383,6 +390,11 @@ model Order {
   // Payment
   paymentMethod     String  @map("payment_method") // cod, esewa, khalti, bank_transfer
   paymentStatus     String  @default("pending") @map("payment_status") // pending, paid, failed
+  // Unique among non-cancelled orders (case/space-insensitive) via the partial
+  // index "orders_transaction_number_active_key", created in raw SQL in
+  // migration 20261106000000_vendor_discounts_txn_index — Prisma can't express
+  // it here. If `prisma migrate dev` ever generates a DROP for that index,
+  // delete that line from the generated migration.
   transactionNumber String? @map("transaction_number")
 
   // Discount
@@ -436,6 +448,11 @@ model OrderItem {
   price    Decimal @db.Decimal(10, 2) // Price at time of order
   quantity Int
   subtotal Decimal @db.Decimal(10, 2) // price * quantity
+
+  // This line's share of a discount paid for by the product's vendor (their
+  // own code). Vendor earnings are subtotal - vendorDiscount. 0 when there was
+  // no discount, or it was a platform code (the platform pays those).
+  vendorDiscount Decimal @default(0) @map("vendor_discount") @db.Decimal(10, 2)
 
   createdAt DateTime @default(now()) @map("created_at")
 

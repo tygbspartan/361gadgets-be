@@ -17,8 +17,13 @@ export const validateBody =
       next();
     } catch (err) {
       if (err instanceof ZodError) {
+        // Lead with the first problem: field details are only sent in
+        // development, so in production this message is all the client sees.
         return next(
-          new BadRequestError("Validation failed", err.flatten().fieldErrors),
+          new BadRequestError(
+            err.issues[0]?.message ?? "Validation failed",
+            err.flatten().fieldErrors,
+          ),
         );
       }
       next(err);

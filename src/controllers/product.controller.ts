@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import prisma from "../config/database.config";
 import { ResponseUtil } from "../utils/response.util";
+import { parseId, parseIntParam } from "../utils/parseId.util";
 import { SlugUtil } from "../utils/slug.util";
 import { JsonUtil } from "../utils/json.util";
 import {
@@ -29,6 +30,7 @@ const parseProductArrays = (product: any) => {
 
 // ── Color variant helpers ─────────────────────────────────────────────────
 import type { ProductColorRequest } from "../types/product.types";
+import { faqsForDb } from "../utils/faqs.util";
 
 // Validate an optional list of color variants.
 function validateColors(colors?: ProductColorRequest[]): void {
@@ -152,7 +154,9 @@ export class ProductController {
         specifications,
         metaTitle,
         metaDescription,
+        faqs,
       }: CreateProductRequest = req.body;
+      const faqsValue = faqsForDb(faqs);
 
       const hasColors = Array.isArray(colors) && colors.length > 0;
 
@@ -242,6 +246,7 @@ export class ProductController {
               countryOfOrigin,
               metaTitle,
               metaDescription,
+              faqs: faqsValue,
               isActive: isActive ?? true,
               isFeatured: featuredFlag,
               homepageFeature: homepageFlag,
@@ -339,6 +344,7 @@ export class ProductController {
               isFeatured: featuredFlag,
               homepageFeature: homepageFlag,
               metaDescription,
+              faqs: faqsValue,
               metaTitle,
               colors: hasColors
                 ? {
@@ -687,7 +693,7 @@ export class ProductController {
       const { id } = req.params;
       const updateData: UpdateProductRequest = req.body;
 
-      const productId = parseInt(id);
+      const productId = parseId(id);
 
       // Check if product exists
       const existingProduct = await prisma.product.findUnique({
@@ -729,7 +735,9 @@ export class ProductController {
         specifications,
         metaTitle,
         metaDescription,
+        faqs,
       } = updateData;
+      const faqsValue = faqsForDb(faqs); // undefined = unchanged
 
       validateColors(colors);
 
@@ -810,6 +818,7 @@ export class ProductController {
             homepageFeature: isSuperAdmin ? homepageFeature : undefined,
             metaTitle,
             metaDescription,
+            faqs: faqsValue,
           } as any,
         });
 
@@ -998,7 +1007,7 @@ export class ProductController {
           });
           targetCategoryId = category?.id || null;
         } else {
-          targetCategoryId = parseInt(categoryId as string);
+          targetCategoryId = parseId(categoryId, "categoryId");
         }
 
         if (targetCategoryId) {
@@ -1025,7 +1034,7 @@ export class ProductController {
             where.brandId = brand.id;
           }
         } else {
-          where.brandId = parseInt(brandId as string);
+          where.brandId = parseId(brandId, "brandId");
         }
       }
 
@@ -1121,7 +1130,7 @@ export class ProductController {
 
       // Ownership scoping: vendors are locked to their own products.
       if (jwtPayload.role === ROLES.SUPERADMIN) {
-        if (ownerId) where.ownerId = parseInt(ownerId as string);
+        if (ownerId) where.ownerId = parseId(ownerId, "ownerId");
       } else {
         where.ownerId = jwtPayload.userId;
       }
@@ -1385,7 +1394,7 @@ export class ProductController {
   static async getById(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
-      const productId = parseInt(id);
+      const productId = parseId(id);
 
       // Run all queries in parallel
       const [product, allCategories, images, specifications, colors] = await Promise.all([
@@ -1437,7 +1446,7 @@ export class ProductController {
 
   //     // Check if product exists
   //     const existingProduct = await prisma.product.findUnique({
-  //       where: { id: parseInt(id) },
+  //       where: { id: parseId(id) },
   //     });
 
   //     if (!existingProduct) {
@@ -1508,7 +1517,7 @@ export class ProductController {
 
   //     // Update product
   //     const product = await prisma.product.update({
-  //       where: { id: parseInt(id) },
+  //       where: { id: parseId(id) },
   //       data: dataToUpdate,
   //       include: {
   //         brand: true,
@@ -1548,7 +1557,7 @@ export class ProductController {
   static async delete(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
-      const productId = parseInt(id);
+      const productId = parseId(id);
 
       // Fetch product with images (for storage cleanup) and its order-item count
       const product = await prisma.product.findUnique({
@@ -1658,7 +1667,7 @@ export class ProductController {
 
       // Check if product exists
       const product = await prisma.product.findUnique({
-        where: { id: parseInt(id) },
+        where: { id: parseId(id) },
       });
 
       if (!product) {
@@ -1678,7 +1687,7 @@ export class ProductController {
       const hasPrimary = images.some((img) => img.isPrimary === true);
       if (hasPrimary) {
         await prisma.productImage.updateMany({
-          where: { productId: parseInt(id) },
+          where: { productId: parseId(id) },
           data: { isPrimary: false },
         });
       }
@@ -1688,7 +1697,7 @@ export class ProductController {
         images.map((image, index) =>
           prisma.productImage.create({
             data: {
-              productId: parseInt(id),
+              productId: parseId(id),
               imageUrl: image.imageUrl,
               altText: image.altText,
               isPrimary: image.isPrimary || false,
@@ -1716,7 +1725,7 @@ export class ProductController {
 
       // Check if product exists
       const product = await prisma.product.findUnique({
-        where: { id: parseInt(id) },
+        where: { id: parseId(id) },
       });
 
       if (!product) {
@@ -1724,7 +1733,7 @@ export class ProductController {
       }
 
       const images = await prisma.productImage.findMany({
-        where: { productId: parseInt(id) },
+        where: { productId: parseId(id) },
         orderBy: { displayOrder: "asc" },
       });
 
@@ -1741,8 +1750,8 @@ export class ProductController {
       const { imageUrl, altText, isPrimary, displayOrder } = req.body;
 
       // Parse IDs to integers
-      const productId = parseInt(id);
-      const imageIdInt = parseInt(imageId);
+      const productId = parseId(id);
+      const imageIdInt = parseId(imageId, "image ID");
 
       // Check if image exists
       const existingImage = await prisma.productImage.findUnique({
@@ -1788,8 +1797,8 @@ export class ProductController {
     try {
       const { id, imageId } = req.params;
 
-      const productId = parseInt(id);
-      const imageIdInt = parseInt(imageId);
+      const productId = parseId(id);
+      const imageIdInt = parseId(imageId, "image ID");
 
       const image = await prisma.productImage.findUnique({
         where: { id: imageIdInt },
@@ -1821,8 +1830,8 @@ export class ProductController {
       const { id, imageId } = req.params;
 
       // Parse IDs to integers
-      const productId = parseInt(id);
-      const imageIdInt = parseInt(imageId);
+      const productId = parseId(id);
+      const imageIdInt = parseId(imageId, "image ID");
 
       // Check if image exists and belongs to product
       const image = await prisma.productImage.findUnique({
@@ -1861,7 +1870,7 @@ export class ProductController {
   static async uploadImage(req: Request, res: Response, next: NextFunction) {
     try {
       const { id } = req.params;
-      const productId = parseInt(id);
+      const productId = parseId(id);
       const file = req.file;
 
       if (!file) {
@@ -1912,7 +1921,7 @@ export class ProductController {
         req.body;
 
       // Parse product ID
-      const productId = parseInt(id);
+      const productId = parseId(id);
 
       if (!imageOrders || !Array.isArray(imageOrders)) {
         throw new BadRequestError("imageOrders array is required");
@@ -1934,10 +1943,10 @@ export class ProductController {
         imageOrders.map(({ imageId, displayOrder }) =>
           prisma.productImage.updateMany({
             where: {
-              id: parseInt(imageId.toString()), // ✅ Fixed: ensure integer
+              id: parseId(imageId, "image ID"), // ✅ Fixed: ensure integer
               productId: productId,
             },
-            data: { displayOrder: parseInt(displayOrder.toString()) }, // ✅ Fixed: ensure integer
+            data: { displayOrder: parseIntParam(displayOrder, "display order") }, // ✅ Fixed: ensure integer
           }),
         ),
       );
@@ -1969,7 +1978,7 @@ export class ProductController {
       }: { specifications: ProductSpecificationRequest[] } = req.body;
 
       // Parse product ID
-      const productId = parseInt(id);
+      const productId = parseId(id);
 
       // Validation
       if (
@@ -2032,7 +2041,7 @@ export class ProductController {
   ) {
     try {
       const { id } = req.params;
-      const productId = parseInt(id);
+      const productId = parseId(id);
 
       // Check if product exists
       const product = await prisma.product.findUnique({
@@ -2068,8 +2077,8 @@ export class ProductController {
       const { key, value } = req.body;
 
       // Parse IDs
-      const productId = parseInt(id);
-      const specIdInt = parseInt(specId);
+      const productId = parseId(id);
+      const specIdInt = parseId(specId, "spec ID");
 
       // Check if specification exists
       const existingSpec = await prisma.productSpecification.findUnique({
@@ -2111,8 +2120,8 @@ export class ProductController {
       const { id, specId } = req.params;
 
       // Parse IDs
-      const productId = parseInt(id);
-      const specIdInt = parseInt(specId);
+      const productId = parseId(id);
+      const specIdInt = parseId(specId, "spec ID");
 
       // Check if specification exists
       const specification = await prisma.productSpecification.findUnique({
@@ -2153,7 +2162,7 @@ export class ProductController {
       }: { specifications: ProductSpecificationRequest[] } = req.body;
 
       // Parse product ID
-      const productId = parseInt(id);
+      const productId = parseId(id);
 
       if (!specifications || !Array.isArray(specifications)) {
         throw new BadRequestError("Specifications array is required");

@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import prisma from "../config/database.config";
 import { AuthService } from "../services/auth.service";
 import { ResponseUtil } from "../utils/response.util";
+import { parseId } from "../utils/parseId.util";
 import {
   BadRequestError,
   ConflictError,
@@ -12,6 +13,7 @@ import { CacheService } from "../services/cache.service";
 import { StorageService } from "../services/storage.service";
 import { SettingsService } from "../services/settings.service";
 import { writeAudit } from "../utils/audit.util";
+import { parsePagination } from "../utils/pagination.util";
 import { reassignBrandOwner } from "../utils/brandOwnership.util";
 import {
   CreateAdminRequest,
@@ -193,7 +195,7 @@ export class AdminController {
   // Get a single vendor (admin) account — superadmin only.
   static async getAdmin(req: Request, res: Response, next: NextFunction) {
     try {
-      const adminId = parseInt(req.params.id);
+      const adminId = parseId(req.params.id);
 
       const admin = await prisma.user.findFirst({
         where: { id: adminId, role: ROLES.ADMIN },
@@ -216,7 +218,7 @@ export class AdminController {
   // Update a vendor's profile — superadmin only.
   static async updateAdmin(req: Request, res: Response, next: NextFunction) {
     try {
-      const adminId = parseInt(req.params.id);
+      const adminId = parseId(req.params.id);
       const { companyName, logoUrl, firstName, lastName, phone }: UpdateAdminRequest =
         req.body;
 
@@ -243,7 +245,7 @@ export class AdminController {
   // Activate / deactivate a vendor (moderation) — superadmin only.
   static async setAdminStatus(req: Request, res: Response, next: NextFunction) {
     try {
-      const adminId = parseInt(req.params.id);
+      const adminId = parseId(req.params.id);
       const { isActive }: SetAdminStatusRequest = req.body;
 
       if (typeof isActive !== "boolean") {
@@ -303,7 +305,7 @@ export class AdminController {
   // Upload / replace a vendor's logo file (Supabase Storage) — superadmin only.
   static async uploadLogo(req: Request, res: Response, next: NextFunction) {
     try {
-      const adminId = parseInt(req.params.id);
+      const adminId = parseId(req.params.id);
       const file = req.file;
 
       if (!file) {
@@ -339,7 +341,7 @@ export class AdminController {
   // Delete a vendor's logo from storage and clear the field — superadmin only.
   static async deleteLogo(req: Request, res: Response, next: NextFunction) {
     try {
-      const adminId = parseInt(req.params.id);
+      const adminId = parseId(req.params.id);
 
       const vendor = await prisma.user.findFirst({
         where: { id: adminId, role: ROLES.ADMIN },
@@ -370,7 +372,7 @@ export class AdminController {
   // needed) and un-assigns any of this vendor's brands not in the list.
   static async setVendorBrands(req: Request, res: Response, next: NextFunction) {
     try {
-      const vendorId = parseInt(req.params.id);
+      const vendorId = parseId(req.params.id);
       const { brandIds } = req.body as { brandIds?: unknown };
 
       if (!Array.isArray(brandIds)) {
@@ -445,11 +447,15 @@ export class AdminController {
   // much each vendor generated and how much the platform still owes them.
   //
   // Definitions (cancelled orders are excluded entirely):
-  //   grossSales     = sum of the vendor's order-item subtotals (price × qty)
-  //   amountOwed     = the vendor's share on orders that are BOTH paid
-  //                    (paymentStatus = "paid") AND fulfilled (status = "delivered")
-  //                    — i.e. payable to the vendor now
-  //   pendingPayout  = grossSales − amountOwed (sold but not yet payable)
+  //   grossSales      = sum of the vendor's order-item subtotals (price × qty)
+  //   vendorDiscounts = what the vendor's own discount codes took off those
+  //                     items (OrderItem.vendorDiscount; platform codes are
+  //                     paid by the platform and never appear here)
+  //   netSales        = grossSales − vendorDiscounts
+  //   amountOwed      = net sales on orders that are BOTH paid
+  //                     (paymentStatus = "paid") AND fulfilled (status = "delivered")
+  //                     — i.e. payable to the vendor now
+  //   pendingPayout   = netSales − amountOwed (sold but not yet payable)
   //
   // Note: figures are the vendor's item subtotals only — shipping and other
   // vendors' items are never attributed here. No platform commission is applied.
@@ -482,6 +488,7 @@ export class AdminController {
         },
         select: {
           subtotal: true,
+          vendorDiscount: true,
           quantity: true,
           product: { select: { ownerId: true } },
           order: { select: { id: true, status: true, paymentStatus: true } },
@@ -491,6 +498,7 @@ export class AdminController {
       // Aggregate per vendor.
       type Agg = {
         grossSales: number;
+        vendorDiscounts: number;
         owed: number;
         unitsSold: number;
         orderIds: Set<number>;
@@ -503,14 +511,18 @@ export class AdminController {
         if (!agg) {
           agg = {
             grossSales: 0,
+            vendorDiscounts: 0,
             owed: 0,
             unitsSold: 0,
             orderIds: new Set<number>(),
           };
           byVendor.set(ownerId, agg);
         }
-        const amount = parseFloat(item.subtotal.toString());
-        agg.grossSales += amount;
+        const gross = parseFloat(item.subtotal.toString());
+        const vendorDiscount = parseFloat(item.vendorDiscount.toString());
+        const amount = gross - vendorDiscount;
+        agg.grossSales += gross;
+        agg.vendorDiscounts += vendorDiscount;
         agg.unitsSold += item.quantity;
         agg.orderIds.add(item.order.id);
         // Payable only once the order is both collected and fulfilled.
@@ -539,6 +551,8 @@ export class AdminController {
       const data = vendors.map((v) => {
         const agg = byVendor.get(v.id);
         const grossSales = agg?.grossSales ?? 0;
+        const vendorDiscounts = agg?.vendorDiscounts ?? 0;
+        const netSales = grossSales - vendorDiscounts;
         const owed = agg?.owed ?? 0;
         return {
           vendorId: v.id,
@@ -555,8 +569,10 @@ export class AdminController {
           unitsSold: agg?.unitsSold ?? 0,
           orderCount: agg ? agg.orderIds.size : 0,
           grossSales: grossSales.toFixed(2),
+          vendorDiscounts: vendorDiscounts.toFixed(2),
+          netSales: netSales.toFixed(2),
           amountOwed: owed.toFixed(2),
-          pendingPayout: (grossSales - owed).toFixed(2),
+          pendingPayout: (netSales - owed).toFixed(2),
         };
       });
 
@@ -566,11 +582,13 @@ export class AdminController {
       const totals = data.reduce(
         (acc, d) => {
           acc.grossSales += parseFloat(d.grossSales);
+          acc.vendorDiscounts += parseFloat(d.vendorDiscounts);
+          acc.netSales += parseFloat(d.netSales);
           acc.amountOwed += parseFloat(d.amountOwed);
           acc.pendingPayout += parseFloat(d.pendingPayout);
           return acc;
         },
-        { grossSales: 0, amountOwed: 0, pendingPayout: 0 },
+        { grossSales: 0, vendorDiscounts: 0, netSales: 0, amountOwed: 0, pendingPayout: 0 },
       );
 
       return ResponseUtil.success(
@@ -584,6 +602,8 @@ export class AdminController {
           },
           totals: {
             grossSales: totals.grossSales.toFixed(2),
+            vendorDiscounts: totals.vendorDiscounts.toFixed(2),
+            netSales: totals.netSales.toFixed(2),
             amountOwed: totals.amountOwed.toFixed(2),
             pendingPayout: totals.pendingPayout.toFixed(2),
           },
@@ -607,7 +627,7 @@ export class AdminController {
     next: NextFunction,
   ) {
     try {
-      const vendorId = parseInt(req.params.id);
+      const vendorId = parseId(req.params.id);
       const { startDate, endDate } = req.query;
 
       const vendor = await prisma.user.findFirst({
@@ -658,6 +678,7 @@ export class AdminController {
               quantity: true,
               price: true,
               subtotal: true,
+              vendorDiscount: true,
             },
           },
         },
@@ -665,6 +686,7 @@ export class AdminController {
       });
 
       let grossSales = 0;
+      let vendorDiscounts = 0;
       let amountOwed = 0;
 
       const detailedOrders = orders.map((order) => {
@@ -672,11 +694,17 @@ export class AdminController {
           (sum, item) => sum + parseFloat(item.subtotal.toString()),
           0,
         );
+        const vendorDiscount = order.items.reduce(
+          (sum, item) => sum + parseFloat(item.vendorDiscount.toString()),
+          0,
+        );
+        const vendorNet = vendorSubtotal - vendorDiscount;
         const payable =
           order.paymentStatus === "paid" && order.status === "delivered";
 
         grossSales += vendorSubtotal;
-        if (payable) amountOwed += vendorSubtotal;
+        vendorDiscounts += vendorDiscount;
+        if (payable) amountOwed += vendorNet;
 
         return {
           orderId: order.id,
@@ -686,6 +714,8 @@ export class AdminController {
           createdAt: order.createdAt,
           payable,
           vendorSubtotal: vendorSubtotal.toFixed(2),
+          vendorDiscount: vendorDiscount.toFixed(2),
+          vendorNet: vendorNet.toFixed(2),
           items: order.items.map((item) => ({
             id: item.id,
             productName: item.productName,
@@ -693,6 +723,7 @@ export class AdminController {
             quantity: item.quantity,
             price: parseFloat(item.price.toString()).toFixed(2),
             subtotal: parseFloat(item.subtotal.toString()).toFixed(2),
+            vendorDiscount: parseFloat(item.vendorDiscount.toString()).toFixed(2),
           })),
         };
       });
@@ -719,8 +750,10 @@ export class AdminController {
           totals: {
             orderCount: detailedOrders.length,
             grossSales: grossSales.toFixed(2),
+            vendorDiscounts: vendorDiscounts.toFixed(2),
+            netSales: (grossSales - vendorDiscounts).toFixed(2),
             amountOwed: amountOwed.toFixed(2),
-            pendingPayout: (grossSales - amountOwed).toFixed(2),
+            pendingPayout: (grossSales - vendorDiscounts - amountOwed).toFixed(2),
           },
           orders: detailedOrders,
         },
@@ -733,12 +766,13 @@ export class AdminController {
 
   // ==================== PAYOUTS (superadmin) ====================
 
-  // Generate a payout record for a vendor over a period. Gross is the sum of the
-  // vendor's line items on paid + delivered orders in the window; commission uses
+  // Generate a payout record for a vendor over a period. Gross is the vendor's
+  // line items on paid + delivered orders in the window, after their own
+  // discount codes (vendor-funded); commission uses
   // the current platform rate; net is what the platform owes the vendor.
   static async createPayout(req: Request, res: Response, next: NextFunction) {
     try {
-      const vendorId = parseInt(req.params.id);
+      const vendorId = parseId(req.params.id);
       const { periodStart, periodEnd } = req.body as {
         periodStart: Date;
         periodEnd: Date;
@@ -762,13 +796,19 @@ export class AdminController {
             createdAt: { gte: new Date(periodStart), lte: end },
           },
         },
-        select: { subtotal: true },
+        select: { subtotal: true, vendorDiscount: true },
       });
 
-      const gross = items.reduce(
-        (sum, item) => sum + parseFloat(item.subtotal.toString()),
-        0,
-      );
+      const gross =
+        Math.round(
+          items.reduce(
+            (sum, item) =>
+              sum +
+              parseFloat(item.subtotal.toString()) -
+              parseFloat(item.vendorDiscount.toString()),
+            0,
+          ) * 100,
+        ) / 100;
       const settings = await SettingsService.get();
       const rate = Number(settings.commissionRate);
       const commission = Math.round(gross * rate * 100) / 100;
@@ -803,7 +843,7 @@ export class AdminController {
 
   static async listPayouts(req: Request, res: Response, next: NextFunction) {
     try {
-      const vendorId = parseInt(req.params.id);
+      const vendorId = parseId(req.params.id);
       const payouts = await prisma.payout.findMany({
         where: { vendorId },
         orderBy: { createdAt: "desc" },
@@ -816,7 +856,7 @@ export class AdminController {
 
   static async markPayoutPaid(req: Request, res: Response, next: NextFunction) {
     try {
-      const payoutId = parseInt(req.params.payoutId);
+      const payoutId = parseId(req.params.payoutId, "payout ID");
       const { reference } = req.body as { reference?: string };
 
       const existing = await prisma.payout.findUnique({
@@ -851,10 +891,10 @@ export class AdminController {
 
   static async listCustomers(req: Request, res: Response, next: NextFunction) {
     try {
-      const page = Math.max(1, parseInt((req.query.page as string) || "1"));
-      const limit = Math.min(
-        100,
-        Math.max(1, parseInt((req.query.limit as string) || "20")),
+      // Garbage ?page / ?limit fall back to defaults instead of becoming NaN.
+      const { pageNum: page, limitNum: limit } = parsePagination(
+        req.query.page,
+        req.query.limit,
       );
       const search = (req.query.search as string)?.trim();
       const status = req.query.status as string; // "active" | "inactive"
@@ -912,7 +952,7 @@ export class AdminController {
 
   static async getCustomer(req: Request, res: Response, next: NextFunction) {
     try {
-      const customerId = parseInt(req.params.id);
+      const customerId = parseId(req.params.id);
       const customer = await prisma.user.findFirst({
         where: { id: customerId, role: ROLES.CUSTOMER },
         select: {
@@ -955,7 +995,7 @@ export class AdminController {
     next: NextFunction,
   ) {
     try {
-      const customerId = parseInt(req.params.id);
+      const customerId = parseId(req.params.id);
       const { isActive } = req.body as { isActive: boolean };
       if (typeof isActive !== "boolean") {
         throw new BadRequestError("isActive (boolean) is required");
@@ -997,7 +1037,7 @@ export class AdminController {
   // and reviews as a single JSON payload.
   static async exportCustomer(req: Request, res: Response, next: NextFunction) {
     try {
-      const customerId = parseInt(req.params.id);
+      const customerId = parseId(req.params.id);
       const customer = await prisma.user.findFirst({
         where: { id: customerId, role: ROLES.CUSTOMER },
         select: {
@@ -1037,7 +1077,7 @@ export class AdminController {
   // userId FK is set null); addresses, cart, wishlist and reviews cascade away.
   static async deleteCustomer(req: Request, res: Response, next: NextFunction) {
     try {
-      const customerId = parseInt(req.params.id);
+      const customerId = parseId(req.params.id);
       const customer = await prisma.user.findFirst({
         where: { id: customerId, role: ROLES.CUSTOMER },
         select: { id: true, email: true },

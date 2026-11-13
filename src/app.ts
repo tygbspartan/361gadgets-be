@@ -11,6 +11,7 @@ import {
 } from "./middleware/errorHandler.middleware";
 import apiRoutes from "./routes";
 import { config } from "./config/env.config";
+import { ForbiddenError } from "./utils/customError.util";
 
 const app: Application = express();
 
@@ -32,7 +33,8 @@ app.use(
       if (!origin || config.corsOrigins.includes(origin)) {
         return callback(null, true);
       }
-      return callback(new Error(`Origin ${origin} not allowed by CORS`));
+      // 403, not 500: a request from a site we don't allow is refused, not a crash.
+      return callback(new ForbiddenError(`Origin ${origin} not allowed by CORS`));
     },
     credentials: true,
   })
