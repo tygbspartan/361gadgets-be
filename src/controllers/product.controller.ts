@@ -1067,9 +1067,11 @@ export class ProductController {
           include: {
             brand: true,
             category: true,
+            // Primary image first, plus the next one: product cards show
+            // the second picture on hover.
             images: {
-              where: { isPrimary: true },
-              take: 1,
+              orderBy: [{ isPrimary: "desc" }, { displayOrder: "asc" }],
+              take: 2,
             },
             colors: { orderBy: { displayOrder: "asc" } },
           },
