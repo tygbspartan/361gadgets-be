@@ -55,6 +55,19 @@ async function main() {
   const existing = await prisma.category.findMany({ select: { id: true, slug: true, level: true } });
   const idBySlug = new Map(existing.map((c) => [c.slug, c.id]));
 
+  // A category that already exists at a different level would get the new
+  // children attached in the wrong place. Refuse rather than build a broken tree.
+  const levelBySlug = new Map(existing.map((c) => [c.slug, c.level]));
+  const conflicts = entries.filter((e) => levelBySlug.has(e.slug) && levelBySlug.get(e.slug) !== e.level);
+  if (conflicts.length) {
+    console.log(
+      `These slugs already exist at a different level: ${conflicts
+        .map((e) => `${e.slug} (is ${levelBySlug.get(e.slug)}, data says ${e.level})`)
+        .join(", ")}`
+    );
+    if (APPLY) throw new Error("Level conflicts: fix or rename those categories first. Nothing was written.");
+  }
+
   const missing = entries.filter((e) => !idBySlug.has(e.slug));
   const present = entries.length - missing.length;
   console.log(`${entries.length} categories in the data; ${present} already exist; ${missing.length} to create.`);
