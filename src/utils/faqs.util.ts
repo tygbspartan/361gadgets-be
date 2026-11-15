@@ -32,3 +32,23 @@ export function withoutLongCategoryFields<T extends Record<string, any>>(categor
   if (Array.isArray(rest.children)) rest.children = rest.children.map(withoutLongCategoryFields);
   return rest as T;
 }
+
+/**
+ * Optional long text from a request body -> DB value.
+ *   undefined -> undefined (leave unchanged); null / blank -> null; else trimmed.
+ */
+export function optionalTextForDb(input: unknown, label: string, max = 20000): string | null | undefined {
+  if (input === undefined) return undefined;
+  if (input === null) return null;
+  if (typeof input !== "string") throw new BadRequestError(`${label} must be text`);
+  const value = input.trim();
+  if (value.length > max) throw new BadRequestError(`${label} must be at most ${max} characters`);
+  return value || null;
+}
+
+/** Drops a brand's long SEO fields from list responses, which never show them. */
+export function withoutLongBrandFields<T extends Record<string, any>>(brand: T): T {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { seoContent, faqs, ...rest } = brand as Record<string, any>;
+  return rest as T;
+}

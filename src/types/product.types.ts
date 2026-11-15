@@ -68,6 +68,8 @@ export interface CreateBrandRequest {
   metaTitle?: string;
   metaDescription?: string;
   seoDescription?: string;
+  seoContent?: string | null;
+  faqs?: unknown;
   isFeatured?: boolean;
   ownerId?: number | null; // vendor this brand is reserved for (superadmin sets)
 }
@@ -82,6 +84,8 @@ export interface UpdateBrandRequest {
   metaTitle?: string;
   metaDescription?: string;
   seoDescription?: string;
+  seoContent?: string | null;
+  faqs?: unknown;
   ownerId?: number | null; // reassign / clear brand ownership (superadmin)
 }
 

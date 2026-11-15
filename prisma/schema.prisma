@@ -143,6 +143,10 @@ model Brand {
   metaDescription String? @map("meta_description")
   // Long-form intro copy shown above the product grid on the brand page.
   seoDescription  String? @map("seo_description") @db.Text
+  // Optional, like categories: a buying guide shown under the product grid
+  // ("## " headings, "- " bullets) and an FAQ list [{ question, answer }].
+  seoContent      String? @map("seo_content") @db.Text
+  faqs            Json?
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

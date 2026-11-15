@@ -14,6 +14,7 @@ import { CacheService, TTL } from "../services/cache.service";
 import { ROLES } from "../constants/roles.constants";
 import { reassignBrandOwner } from "../utils/brandOwnership.util";
 import { JwtPayload } from "../types/auth.types";
+import { faqsForDb, optionalTextForDb, withoutLongBrandFields } from "../utils/faqs.util";
 
 export class BrandController {
   // Validate that an assigned brand owner is an actual vendor (admin) account.
@@ -42,6 +43,9 @@ export class BrandController {
         logoUrl,
         metaTitle,
         metaDescription,
+        seoDescription,
+        seoContent,
+        faqs,
         isFeatured,
         ownerId,
       }: CreateBrandRequest = req.body;
@@ -76,6 +80,9 @@ export class BrandController {
           logoUrl,
           metaTitle,
           metaDescription,
+          seoDescription: optionalTextForDb(seoDescription, "Brand page copy", 5000),
+          seoContent: optionalTextForDb(seoContent, "Buying guide"),
+          faqs: faqsForDb(faqs),
           isFeatured,
           ownerId: ownerId ?? null,
         },
@@ -169,9 +176,21 @@ export class BrandController {
   }
 
   // Get all brands (Public)
+  // A category and every category under it (levels 2 and 3), by slug.
+  private static async categorySubtreeIds(slug: string): Promise<number[]> {
+    const all = await prisma.category.findMany({ select: { id: true, slug: true, parentId: true } });
+    const root = all.find((c) => c.slug === slug);
+    if (!root) return [];
+    const ids = [root.id];
+    for (let i = 0; i < ids.length; i++) {
+      for (const c of all) if (c.parentId === ids[i]) ids.push(c.id);
+    }
+    return ids;
+  }
+
   static async getAll(req: Request, res: Response, next: NextFunction) {
     try {
-      const { isActive, isFeatured } = req.query;
+      const { isActive, isFeatured, category } = req.query;
 
       const cacheKey = `brands:all:${JSON.stringify(req.query)}`;
       const cached = await CacheService.get(cacheKey);
@@ -188,6 +207,14 @@ export class BrandController {
         where.isFeatured = isFeatured === "true";
       }
 
+      // ?category=<slug>: only brands with an active product in that category
+      // or any category under it (the category page's brand filter).
+      if (typeof category === "string" && category.trim()) {
+        const ids = await BrandController.categorySubtreeIds(category.trim());
+        where.isActive = true;
+        where.products = { some: { isActive: true, categoryId: { in: ids } } };
+      }
+
       const brands = await prisma.brand.findMany({
         where,
         include: {
@@ -202,7 +229,7 @@ export class BrandController {
 
       // Transform response to include product count
       const response = brands.map((brand) => ({
-        ...brand,
+        ...withoutLongBrandFields(brand),
         productCount: brand._count.products,
         _count: undefined, // Remove internal count object
       }));
@@ -236,7 +263,7 @@ export class BrandController {
       });
 
       const response = brands.map((brand) => ({
-        ...brand,
+        ...withoutLongBrandFields(brand),
         productCount: brand._count.products,
         _count: undefined,
       }));
@@ -371,6 +398,12 @@ export class BrandController {
 
       await BrandController.assertValidBrandOwner(updateData.ownerId);
 
+      // The slug is the brand page URL (/brand/<slug>): normalise whatever was typed.
+      if (updateData.slug !== undefined) {
+        updateData.slug = SlugUtil.generateSlug(String(updateData.slug));
+        if (!updateData.slug) throw new BadRequestError("Slug cannot be empty");
+      }
+
       // If updating slug, check for conflicts
       if (updateData.slug && updateData.slug !== existingBrand.slug) {
         const slugExists = await prisma.brand.findUnique({
@@ -416,6 +449,8 @@ export class BrandController {
             metaTitle: updateData.metaTitle,
             metaDescription: updateData.metaDescription,
             seoDescription: updateData.seoDescription,
+            seoContent: optionalTextForDb(updateData.seoContent, "Buying guide"),
+            faqs: faqsForDb(updateData.faqs),
             // ownerId handled above via reassignBrandOwner (do not set here).
           },
         });
