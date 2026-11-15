@@ -1,5 +1,30 @@
 import { getRedisClient } from "../config/redis.config";
 
+/*
+ * The storefront (Next.js) caches catalog data for up to an hour (fetch cache
+ * tag "catalog"), and its pages and sitemap are built from it. When products,
+ * categories or brands change here, tell it to drop that cache so the change
+ * shows on the site and in the sitemap right away.
+ *   STOREFRONT_REVALIDATE_URL  e.g. http://127.0.0.1:3001/api/revalidate
+ *   REVALIDATE_SECRET          shared with the storefront
+ * Unset (e.g. in tests) = skipped. Failures never break the write.
+ */
+const CATALOG_PATTERN = /^(products|categories|brands):/;
+async function notifyStorefront(): Promise<void> {
+  const url = process.env.STOREFRONT_REVALIDATE_URL;
+  const secret = process.env.REVALIDATE_SECRET;
+  if (!url || !secret) return;
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "x-revalidate-secret": secret },
+      signal: AbortSignal.timeout(3000),
+    });
+  } catch {
+    // The storefront still refreshes on its own within the hour.
+  }
+}
+
 export const CacheService = {
   async get<T>(key: string): Promise<T | null> {
     try {
@@ -39,23 +64,25 @@ export const CacheService = {
   async invalidatePattern(pattern: string): Promise<void> {
     try {
       const client = getRedisClient();
-      if (!client) return;
-
-      let cursor = "0";
-      do {
-        const [nextCursor, keys] = await client.scan(
-          cursor,
-          "MATCH",
-          pattern,
-          "COUNT",
-          100,
-        );
-        cursor = nextCursor;
-        if (keys.length > 0) {
-          await client.del(...keys);
-        }
-      } while (cursor !== "0");
+      if (client) {
+        let cursor = "0";
+        do {
+          const [nextCursor, keys] = await client.scan(
+            cursor,
+            "MATCH",
+            pattern,
+            "COUNT",
+            100,
+          );
+          cursor = nextCursor;
+          if (keys.length > 0) {
+            await client.del(...keys);
+          }
+        } while (cursor !== "0");
+      }
     } catch {}
+    // After the API cache is cleared, so the storefront refetches fresh data.
+    if (CATALOG_PATTERN.test(pattern)) await notifyStorefront();
   },
 
   // Fire-and-forget invalidation — doesn't block the write response
